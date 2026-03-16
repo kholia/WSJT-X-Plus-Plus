@@ -1,0 +1,107 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build-windows
+      DEPS_PREFIX: ${{ github.workspace }}/local
+      WSJTX_SRC_DIR: ${{ github.workspace }}/wsjtx-src
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            autoconf
+            automake
+            libtool
+            make
+            patch
+            pkgconf
+            tar
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-fftw
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gcc-fortran
+            mingw-w64-x86_64-libusb
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-portaudio
+            mingw-w64-x86_64-qt5-activeqt
+            mingw-w64-x86_64-qt5-base
+            mingw-w64-x86_64-qt5-multimedia
+            mingw-w64-x86_64-qt5-serialport
+            mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-qt5-websockets
+
+      - name: Install NSIS
+        shell: powershell
+        run: |
+          choco install nsis --no-progress -y
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build and install Hamlib
+        run: |
+          set -euo pipefail
+          mkdir -p "$DEPS_PREFIX"
+          tar xzf src/hamlib-4.7.tar.gz
+          cd hamlib-4.7
+          ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static --without-cxx-binding
+          make -j"$(nproc)"
+          make install-strip
+
+      - name: Extract and patch WSJT-X sources
+        run: |
+          set -euo pipefail
+          rm -rf "$WSJTX_SRC_DIR"
+          mkdir -p "$WSJTX_SRC_DIR"
+          tar xzf src/wsjtx.tgz -C "$WSJTX_SRC_DIR" --strip-components=1
+          cd "$WSJTX_SRC_DIR"
+          patch -p1 -N < "$GITHUB_WORKSPACE/wsjtx.patch"
+
+      - name: Configure WSJT-X
+        run: |
+          set -euo pipefail
+          cmake -S "$WSJTX_SRC_DIR" -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$DEPS_PREFIX;/mingw64" \
+            -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+            -DWSJT_GENERATE_DOCS=OFF \
+            -DWSJT_SKIP_MANPAGES=ON
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/local/lib/pkgconfig:/mingw64/lib/pkgconfig
+
+      - name: Build package
+        run: |
+          set -euo pipefail
+          cmake --build "$BUILD_DIR" --parallel
+          cmake --build "$BUILD_DIR" --target package --parallel
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/local/lib/pkgconfig:/mingw64/lib/pkgconfig
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wsjtx-windows
+          path: |
+            build-windows/*.exe
+            build-windows/*.msi
+            build-windows/*.zip
+          if-no-files-found: error
