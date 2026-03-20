@@ -1069,6 +1069,7 @@ private:
   void update_foxLogWindow_rate();
   void to_jt9(qint32 n, qint32 istart, qint32 idone);
   bool is77BitMode () const;
+  QString getTransmittedSymbols() const;
   void cease_auto_Tx_after_QSO ();
   Q_SLOT void ARRL_Digi_Display();
   void ARRL_Digi_Update(DecodedText dt);

@@ -14092,6 +14092,7 @@ void MainWindow::statusUpdate () const
     {
       tr_period = quint32_max;
     }
+
   m_messageClient->status_update (m_freqNominal, m_mode, m_hisCall,
                                   QString::number (ui->rptSpinBox->value ()),
                                   m_mode, ui->autoButton->isChecked (),
@@ -14102,7 +14103,50 @@ void MainWindow::statusUpdate () const
                                   submode != QChar::Null ? QString {submode} : QString {}, m_bFastMode,
                                   static_cast<quint8> (m_specOp),
                                   ftol, tr_period, m_multi_settings->configuration_name (),
-                                  m_currentMessage);
+                                  m_currentMessage, getTransmittedSymbols ());
+}
+
+QString MainWindow::getTransmittedSymbols() const
+{
+  if (!m_transmitting) {
+    return {};
+  }
+
+  static const QHash<QString, int> symbol_counts {
+    {"JT4", NUM_JT4_SYMBOLS},
+    {"JT65", NUM_JT65_SYMBOLS},
+    {"JT9", NUM_JT9_SYMBOLS},
+    {"WSPR", NUM_WSPR_SYMBOLS},
+    {"MSK144", NUM_MSK144_SYMBOLS},
+    {"Q65", NUM_Q65_SYMBOLS},
+    {"FT8", NUM_FT8_SYMBOLS},
+    {"FT4", NUM_FT4_SYMBOLS},
+    {"FT2", NUM_FT2_SYMBOLS},
+    {"FST4", NUM_FST4_SYMBOLS},
+    {"FST4W", NUM_FST4_SYMBOLS},
+    {"CW", NUM_CW_SYMBOLS},
+    {"Echo", 6}
+  };
+
+  int nsym = symbol_counts.value(m_mode, 0);
+
+  // Mode-specific overrides
+  if ("FT8" == m_mode && m_config.superFox() && (SpecOp::FOX == m_specOp || SpecOp::HOUND == m_specOp)) {
+    nsym = NUM_SUPERFOX_SYMBOLS;
+  } else if ("MSK144" == m_mode && itone[40] < 0) {
+    nsym = 40;
+  }
+
+  if (nsym <= 0) {
+    return {};
+  }
+
+  QStringList symbols;
+  symbols.reserve(nsym);
+  for (int i = 0; i < nsym; ++i) {
+    symbols << QString::number(itone[i]);
+  }
+  return symbols.join(' ');
 }
 
 void MainWindow::childEvent (QChildEvent * e)
