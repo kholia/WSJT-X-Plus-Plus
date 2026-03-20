@@ -123,6 +123,7 @@ protected:
   virtual void do_trfrequency(double) {}
   virtual void do_volume (qreal) {}
   virtual void do_txvolume (qreal) {}
+  virtual void do_tx_symbols(QString const&) {}
   //parameters are MODE,symbolslength,framespersymbol,trfrequency,tonespacing,synchronize,FASTMODE,dbsdr,trperiod //parameters added by w3sz are in bold
   virtual void do_modulator_start(QString, unsigned, double, double, double, bool, bool, double, double) {}
   virtual void do_modulator_stop(bool) {}

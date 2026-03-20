@@ -507,6 +507,7 @@ public:
   void transceiver_spread (double);
   void transceiver_nsym (int);
   void transceiver_trfrequency (double);
+  void transceiver_tx_symbols (QString const&);
   void transceiver_volume (double);
   void transceiver_txvolume (double);
   void sync_transceiver (bool force_signal);
@@ -1213,6 +1214,11 @@ bool Configuration::is_tci () const
   return m_->is_tci_;
 }
 
+bool Configuration::is_simple_cat () const
+{
+  return m_->rig_params_.rig_name == "Simple CAT";
+}
+
 bool Configuration::transceiver_online ()
 {
   LOG_TRACE (m_->cached_rig_state_);
@@ -1328,6 +1334,15 @@ void Configuration::transceiver_trfrequency (double trfrequency)
 #endif
 
   m_->transceiver_trfrequency (trfrequency);
+}
+
+void Configuration::transceiver_tx_symbols (QString const& tx_symbols)
+{
+#if WSJT_TRACE_CAT
+  qDebug () << "Configuration::transceiver_tx_symbols:" << tx_symbols << m_->cached_rig_state_;
+#endif
+
+  m_->transceiver_tx_symbols (tx_symbols);
 }
 
 void Configuration::transceiver_txvolume (qreal txvolume)
@@ -5289,6 +5304,17 @@ void Configuration::impl::transceiver_trfrequency (double trfrequency)
   }
 }
 
+void Configuration::impl::transceiver_tx_symbols (QString const& tx_symbols)
+{
+  cached_rig_state_.online (true); // we want the rig online
+  set_cached_mode ();
+  if (cached_rig_state_.tx_symbols() != tx_symbols)
+  {
+    cached_rig_state_.tx_symbols (tx_symbols);
+    Q_EMIT set_transceiver (cached_rig_state_, ++transceiver_command_number_);
+  }
+}
+
 void Configuration::impl::transceiver_txvolume (double txvolume)
 {
   cached_rig_state_.online (true); // we want the rig online
@@ -5317,7 +5343,8 @@ void Configuration::impl::transceiver_modulator_start (QString jtmode, unsigned 
 {
   cached_rig_state_.online (true); // we want the rig online
   set_cached_mode ();
-  if (!cached_rig_state_.tx_audio())
+  bool const force_refresh {"Simple CAT" == rig_params_.rig_name};
+  if (!cached_rig_state_.tx_audio() || force_refresh)
   {
     cached_rig_state_.tx_audio (true);
     cached_rig_state_.symbolslength (symbolslength);

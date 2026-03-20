@@ -69,6 +69,7 @@ SOURCES += \
   Transceiver/HamlibTransceiver.cpp \
   Transceiver/OmniRigTransceiver.cpp \
   Transceiver/PollingTransceiver.cpp \
+  Transceiver/SimpleCATTransceiver.cpp \
   Transceiver/TCITransceiver.cpp \
   Transceiver/Transceiver.cpp \
   Transceiver/TransceiverBase.cpp \
@@ -90,6 +91,7 @@ HEADERS  += qt_helpers.hpp qt_db_helpers.hpp \
   Transceiver/HamlibTransceiver.hpp \
   Transceiver/OmniRigTransceiver.hpp \
   Transceiver/PollingTransceiver.hpp \
+  Transceiver/SimpleCATTransceiver.hpp \
   Transceiver/TCITransceiver.hpp \
   Transceiver/TCITransceiver_modified_but_not_yet_working.hpp \
   Transceiver/Transceiver.hpp \

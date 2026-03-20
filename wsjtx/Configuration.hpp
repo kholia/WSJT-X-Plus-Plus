@@ -356,6 +356,7 @@ public:
   // check if a real rig is configured
   bool is_dummy_rig () const;
   bool is_tci () const;
+  bool is_simple_cat () const;
 
   // Frequency resolution of the rig
   //
@@ -425,6 +426,9 @@ public:
   // Set trfrequency for TCI audio
   //
   Q_SLOT void transceiver_trfrequency (double = 1500.0);
+
+  // Set transmitted symbol string for remote modulators.
+  Q_SLOT void transceiver_tx_symbols (QString const&);
 
   // Attempt to (re-)synchronise transceiver state.
   //

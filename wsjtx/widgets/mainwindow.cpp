@@ -8531,17 +8531,18 @@ void MainWindow::useNextCall()
 }
 
 void MainWindow::startTx2()
-{    
+{
   bool modulator_active;
-  bool tci_active = m_tci_audio;
-  if (tci_active) modulator_active=m_tci_mod_active;
-  else modulator_active=m_modulator->isActive ();
+  bool remote_modulator = m_tci_audio || m_config.is_simple_cat ();
+  if (m_tci_audio) modulator_active = m_tci_mod_active;
+  else if (m_config.is_simple_cat ()) modulator_active = false;
+  else modulator_active = m_modulator->isActive ();
     if (!modulator_active) { // TODO - not thread safe
     double fSpread=0.0;
     double snr=99.0;
     QString t=ui->tx5->currentText();
     if(t.mid(0,1)=="#") fSpread=t.mid(1,5).toDouble();
-    if (tci_active) Q_EMIT m_config.transceiver_spread(fSpread);
+    if (remote_modulator) Q_EMIT m_config.transceiver_spread(fSpread);
     else m_modulator->setSpread(fSpread); // TODO - not thread safe
     t=ui->tx6->text();
     if(t.mid(0,1)=="#") snr=t.mid(1,5).toDouble();
@@ -8570,7 +8571,7 @@ void MainWindow::startTx2()
 
 void MainWindow::stopTx()
 {
-  if (m_tci_audio) Q_EMIT m_config.transceiver_modulator_stop();
+  if (m_tci_audio || m_config.is_simple_cat ()) Q_EMIT m_config.transceiver_modulator_stop();
   else Q_EMIT endTransmitMessage ();
   m_btxok = false;
   m_transmitting = false;
@@ -8579,7 +8580,7 @@ void MainWindow::stopTx()
     tx_status_label.setStyleSheet("");
     tx_status_label.setText("");
   }
-  if (m_tci_audio) {
+  if (m_tci_audio || m_config.is_simple_cat ()) {
     ptt0Timer.start(0);
   } else {
     ptt0Timer.start(200);                //end-of-transmission sequencer delay
@@ -8590,7 +8591,7 @@ void MainWindow::stopTx()
 
 void MainWindow::stopTx2()
 {
-  if (m_tci_audio) {
+  if (m_tci_audio || m_config.is_simple_cat ()) {
       Q_EMIT m_config.transceiver_ptt (false);      //Lower PTT
       monitor (true);
       statusUpdate ();
@@ -12732,12 +12733,17 @@ void MainWindow::rigFailure (QString const& reason)
 
 void MainWindow::transmit (double snr)
 {
+  bool const remote_modulator {m_tci_audio || m_config.is_simple_cat ()};
+  if (m_config.is_simple_cat ()) {
+    Q_EMIT m_config.transceiver_tx_symbols (getTransmittedSymbols ());
+  }
+
   double toneSpacing=0.0;
   if (m_mode == "JT65") {
     if(m_nSubMode==0) toneSpacing=11025.0/4096.0;
     if(m_nSubMode==1) toneSpacing=2*11025.0/4096.0;
     if(m_nSubMode==2) toneSpacing=4*11025.0/4096.0;
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT65_SYMBOLS,
              4096.0*12000.0/11025.0, ui->TxFreqSpinBox->value () - m_XIT,
              toneSpacing,true,false,snr,m_TRperiod);
@@ -12762,7 +12768,7 @@ void MainWindow::transmit (double snr)
     if(m_config.x4ToneSpacing()) toneSpacing=4*12000.0/1920.0;
     if(SpecOp::FOX==m_specOp and !m_tune) toneSpacing=-1;
     if(SpecOp::FOX==m_specOp and m_config.superFox()) {
-      if (m_tci_audio) {
+      if (remote_modulator) {
         Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_SUPERFOX_SYMBOLS,
             1024.0,ui->TxFreqSpinBox->value()-m_XIT,
             toneSpacing,true,false,snr,m_TRperiod);
@@ -12773,7 +12779,7 @@ void MainWindow::transmit (double snr)
             true, false, snr, m_TRperiod);
       }
     } else {
-        if (m_tci_audio) {
+        if (remote_modulator) {
           Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT8_SYMBOLS,
               1920.0,ui->TxFreqSpinBox->value()-m_XIT,
               toneSpacing,true,false,snr,m_TRperiod);
@@ -12789,7 +12795,7 @@ void MainWindow::transmit (double snr)
   if (m_mode == "FT4") {
     m_dateTimeSentTx3=QDateTime::currentDateTimeUtc();
     toneSpacing=-2.0;                     //Transmit a pre-computed, filtered waveform.
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT4_SYMBOLS,
              576.0,ui->TxFreqSpinBox->value()-m_XIT,
              toneSpacing,true,false,snr,m_TRperiod);
@@ -12827,7 +12833,7 @@ void MainWindow::transmit (double snr)
     double f0=ui->WSPRfreqSpinBox->value() - m_XIT;
     if(m_mode=="FST4") f0=ui->TxFreqSpinBox->value() - m_XIT;
     if(!m_tune) f0 += 1.5*dfreq;
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FST4_SYMBOLS,double(nsps),f0,toneSpacing,
              true,false,snr,m_TRperiod);
     } else {
@@ -12846,7 +12852,7 @@ void MainWindow::transmit (double snr)
     int mode65=pow(2.0,double(m_nSubMode));
     toneSpacing=mode65*12000.0/nsps;
 //    toneSpacing=-4.0;
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_Q65_SYMBOLS,
              double(nsps),ui->TxFreqSpinBox->value()-m_XIT,
              toneSpacing,true,false,snr,m_TRperiod);
@@ -12871,7 +12877,7 @@ void MainWindow::transmit (double snr)
       sps=nsps[m_nSubMode-4];
       m_toneSpacing=12000.0/sps;
     }
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT9_SYMBOLS,sps,
              ui->TxFreqSpinBox->value()-m_XIT,
              m_toneSpacing,true,fastmode,snr,m_TRperiod);
@@ -12897,7 +12903,7 @@ void MainWindow::transmit (double snr)
     int nsym;
     nsym=NUM_MSK144_SYMBOLS;
     if(itone[40] < 0) nsym=40;
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, nsym,double(m_nsps),f0, m_toneSpacing,
              true,true,snr,m_TRperiod);
     } else {
@@ -12915,7 +12921,7 @@ void MainWindow::transmit (double snr)
     if(m_nSubMode==4) toneSpacing=18*4.375;
     if(m_nSubMode==5) toneSpacing=36*4.375;
     if(m_nSubMode==6) toneSpacing=72*4.375;
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT4_SYMBOLS,
              2520.0*12000.0/11025.0,ui->TxFreqSpinBox->value()-m_XIT,
              toneSpacing,true,false,snr,m_TRperiod);
@@ -12931,7 +12937,7 @@ void MainWindow::transmit (double snr)
     int nToneSpacing=1;
     if(m_config.x2ToneSpacing()) nToneSpacing=2;
     if(m_config.x4ToneSpacing()) nToneSpacing=4;
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_WSPR_SYMBOLS,8192.0,
              ui->TxFreqSpinBox->value() - 1.5 * 12000 / 8192,
              m_toneSpacing*nToneSpacing,true,false,snr,
@@ -12981,7 +12987,7 @@ void MainWindow::transmit (double snr)
     }
 
     m_msEchoTxStart=QDateTime::currentMSecsSinceEpoch();
-    if (m_tci_audio) {
+    if (remote_modulator) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode,numEchoSymbols,framesPerSymbol,freq,toneSpacing,
              false,false,snr,m_TRperiod);
     } else {

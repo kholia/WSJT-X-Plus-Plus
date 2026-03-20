@@ -98,6 +98,11 @@ void TransceiverBase::set (TransceiverState const& s,
             audio_cmd = true;
             requested_.trfrequency (s.trfrequency ());
           }
+          if (requested_.tx_symbols() != s.tx_symbols()) {
+            do_tx_symbols (s.tx_symbols());
+            audio_cmd = true;
+            requested_.tx_symbols (s.tx_symbols ());
+          }
           if (requested_.audio() != s.audio()) {
             do_audio (s.audio());
             audio_cmd = true;

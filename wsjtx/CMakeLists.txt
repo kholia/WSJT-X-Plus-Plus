@@ -231,6 +231,7 @@ set (wsjt_qt_CXXSRCS
   Transceiver/TransceiverFactory.cpp
   Transceiver/PollingTransceiver.cpp
   Transceiver/HamlibTransceiver.cpp
+  Transceiver/SimpleCATTransceiver.cpp
   Transceiver/TCITransceiver.cpp
   Transceiver/HRDTransceiver.cpp
   Transceiver/DXLabSuiteCommanderTransceiver.cpp

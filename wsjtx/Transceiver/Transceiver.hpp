@@ -7,11 +7,10 @@
 #include <boost/log/sources/severity_channel_logger.hpp>
 
 #include <QObject>
+#include <QString>
 
 #include "qt_helpers.hpp"
 #include "Radio.hpp"
-
-class QString;
 
 //
 // Abstract Transceiver Interface
@@ -108,6 +107,7 @@ public:
       , swr_ {0}
       , jtmode_ {"FT8"}  //w3sz tci
       , fastmode_ {false}  //w3sz tci
+      , tx_symbols_ {}
     {
     }
 
@@ -139,6 +139,7 @@ public:
     unsigned int swr () const {return swr_;}
     QString jtmode () const {return jtmode_;}  //w3sz tci
     bool fastmode () const {return fastmode_;}  //w3sz tci
+    QString tx_symbols () const {return tx_symbols_;}
 
     void online (bool state) {online_ = state;}
     void frequency (Frequency f) {rx_frequency_ = f;}
@@ -168,6 +169,7 @@ public:
     void swr (unsigned int mswr) {swr_ = mswr;}
     void jtmode(QString jtmode) {jtmode_ = jtmode;}  //w3sz tci
     void fastmode(bool fastmode) {fastmode_ = fastmode;}  //w3sz tci
+    void tx_symbols(QString const& tx_symbols) {tx_symbols_ = tx_symbols;}
 
   private:
     bool online_;
@@ -198,6 +200,7 @@ public:
     unsigned int swr_;
     QString jtmode_;  //w3sz tci
     bool fastmode_;  //w3sz tci
+    QString tx_symbols_;
 
     // Don't forget to update the debug print and != operator if you
     // add more members here
