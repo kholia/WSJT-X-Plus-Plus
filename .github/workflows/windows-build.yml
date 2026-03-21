@@ -81,8 +81,23 @@ jobs:
           mkdir -p "$WSJTX_SRC_DIR"
           tar xzf src/wsjtx.tgz -C "$WSJTX_SRC_DIR" --strip-components=1
           sed -i 's/\r$//' "$GITHUB_WORKSPACE/wsjtx.patch"
+          sed -i 's/\r$//' "$GITHUB_WORKSPACE/cmake-changes.patch"
+          sed -i 's/\r$//' "$GITHUB_WORKSPACE/itone.patch"
+          sed -i 's/\r$//' "$GITHUB_WORKSPACE/simple-cat.patch"
+          # sed -i 's/\r$//' "$GITHUB_WORKSPACE/cdc-acm-fixes-windows.patch"
+          # sed -i 's/\r$//' "$GITHUB_WORKSPACE/more-cdc-acm-fixes-windows.patch"
           cd "$WSJTX_SRC_DIR"
           patch -p1 -N < "$GITHUB_WORKSPACE/wsjtx.patch"
+          patch -p1 -N < "$GITHUB_WORKSPACE/itone.patch"
+          patch -p1 -N < "$GITHUB_WORKSPACE/simple-cat.patch"
+          patch -p1 -N < "$GITHUB_WORKSPACE/cmake-changes.patch"
+          # patch -p1 -N < "$GITHUB_WORKSPACE/cdc-acm-fixes-windows.patch"
+          # patch -p1 -N < "$GITHUB_WORKSPACE/more-cdc-acm-fixes-windows.patch"
+          cp "$GITHUB_WORKSPACE/SimpleCATTransceiver.cpp" Transceiver/
+          cp "$GITHUB_WORKSPACE/SimpleCATTransceiver.hpp" Transceiver/
+          cp "$GITHUB_WORKSPACE/serialib.cpp" Transceiver/
+          cp "$GITHUB_WORKSPACE/serialib.h" Transceiver/
+          cp "$GITHUB_WORKSPACE/CMakeLists.txt" .
           sed -i 's/\r$//' CMakeLists.txt Transceiver/TransceiverFactory.cpp CMake/Modules/FindFFTW3.cmake CMake/Modules/FindHamlib.cmake
           perl -0pi -e 's/option \(WSJT_FOX_OTP "Enable Fox OTP Verification Messages\."\ ON\)\n/option (WSJT_FOX_OTP "Enable Fox OTP Verification Messages." ON)\noption (WSJT_DISABLE_OMNIRIG\n  "Disable OmniRig support. Useful for Windows CI environments without OmniRig installed."\n  OFF)\nif (WSJT_DISABLE_OMNIRIG)\n  add_definitions (-DWSJT_DISABLE_OMNIRIG)\nendif ()\n/s' CMakeLists.txt
           perl -0pi -e 's/if \(WIN32\)\n  set \(wsjt_CXXSRCS\n    \$\{wsjt_CXXSRCS\}\n    killbyname\.cpp\n    \)\n\n  set \(wsjt_qt_CXXSRCS\n    \$\{wsjt_qt_CXXSRCS\}\n    Transceiver\/OmniRigTransceiver\.cpp\n    \)\nendif \(WIN32\)/if (WIN32)\n  set (wsjt_CXXSRCS\n    \${wsjt_CXXSRCS}\n    killbyname.cpp\n    )\n\n  if (NOT WSJT_DISABLE_OMNIRIG)\n    set (wsjt_qt_CXXSRCS\n      \${wsjt_qt_CXXSRCS}\n      Transceiver\/OmniRigTransceiver.cpp\n      )\n  endif ()\nendif (WIN32)/s' CMakeLists.txt

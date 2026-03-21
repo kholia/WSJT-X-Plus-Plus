@@ -8,8 +8,20 @@
 
 #include "moc_SimpleCATTransceiver.cpp"
 
+// Include serialib library
+#include "serialib.h"
+
 namespace {
 char const *const simple_cat_transceiver_name{"Simple CAT"};
+
+#if defined(Q_OS_WIN32)
+// Increased timeouts for Windows CDC ACM devices which can be slower to respond
+int const command_timeout_ms {5000};
+int const cdc_acm_settle_ms {1000};
+#else
+int const command_timeout_ms {1000};
+int const cdc_acm_settle_ms {250};
+#endif
 }
 
 void SimpleCATTransceiver::register_transceivers(
@@ -22,20 +34,36 @@ SimpleCATTransceiver::SimpleCATTransceiver(
     logger_type *logger, TransceiverFactory::ParameterPack const &params,
     QObject *parent)
     : PollingTransceiver{logger, params.poll_interval, parent},
-      params_{params} {}
+      params_{params},
+      port_{new serialib()} {}
+
+SimpleCATTransceiver::~SimpleCATTransceiver() {
+  delete port_;
+}
 
 int SimpleCATTransceiver::do_start() {
   CAT_TRACE("Simple CAT start on" << params_.serial_port);
-  port_.setPortName(params_.serial_port);
-  apply_serial_settings();
 
-  if (!port_.open(QIODevice::ReadWrite)) {
-    throw error{tr("Simple CAT: cannot open serial port %1: %2")
-                    .arg(params_.serial_port, port_.errorString())};
+  // Convert QString to std::string for serialib
+  // On Windows, use \\.\ prefix for all COM ports (per serialib examples)
+  std::string port_name;
+#if defined(Q_OS_WIN32)
+  port_name = "\\\\.\\" + params_.serial_port.toStdString();
+#else
+  port_name = params_.serial_port.toStdString();
+#endif
+
+  // Open the serial port using serialib
+  char result = port_->openDevice(port_name.c_str(), params_.baud);
+  if (result != 1) {
+    throw error{tr("Simple CAT: cannot open serial port %1 (error code: %2)")
+                    .arg(params_.serial_port).arg(result)};
   }
 
-  QThread::msleep(250);
-  port_.clear();
+  // Wait for device to settle and flush any stale data
+  QThread::msleep(cdc_acm_settle_ms);
+  port_->flushReceiver();
+
   try {
     send_ok_command("HELP");
   } catch (std::exception const &e) {
@@ -53,8 +81,8 @@ void SimpleCATTransceiver::do_stop() {
   modulator_ready_ = false;
   tx_active_ = false;
   pending_tx_symbols_.clear();
-  if (port_.isOpen()) {
-    port_.close();
+  if (port_->isDeviceOpen()) {
+    port_->closeDevice();
   }
 }
 
@@ -156,45 +184,48 @@ void SimpleCATTransceiver::do_poll() { refresh_state(); }
 
 QString SimpleCATTransceiver::send_command(QString const &command,
                                            int timeout_ms) {
-  if (!port_.isOpen()) {
+  if (!port_->isDeviceOpen()) {
     throw error{tr("Simple CAT: serial port is not open")};
   }
 
   CAT_TRACE("Simple CAT >>" << command);
-  port_.clear(QSerialPort::Input);
+
+  // Flush receiver buffer before sending command
+  port_->flushReceiver();
 
   auto payload = command.toUtf8();
-  payload.append('\n');
+  payload.append('\r');  // Firmware triggers on CR
 
-  if (port_.write(payload) != payload.size()) {
-    throw error{tr("Simple CAT: failed to write command %1").arg(command)};
-  }
-  if (!port_.waitForBytesWritten(timeout_ms)) {
-    throw error{tr("Simple CAT: timeout writing command %1").arg(command)};
+  // Use platform-specific default timeout if not specified
+  if (timeout_ms <= 0) {
+    timeout_ms = command_timeout_ms;
   }
 
-  QByteArray response;
-  QElapsedTimer timer;
-  timer.start();
-  while (timer.elapsed() < timeout_ms) {
-    if (port_.canReadLine()) {
-      response += port_.readLine();
-      break;
-    }
-
-    auto remaining = timeout_ms - static_cast<int>(timer.elapsed());
-    if (remaining <= 0 || !port_.waitForReadyRead(remaining)) {
-      continue;
-    }
-    response += port_.readAll();
-    if (response.contains('\n')) {
-      break;
-    }
+  // Write command - serialib handles timeouts internally
+  int write_result = port_->writeString(payload.constData());
+  if (write_result != 1) {
+    throw error{tr("Simple CAT: failed to write command %1 (error: %2)")
+                .arg(command).arg(write_result)};
   }
 
-  auto line = QString::fromUtf8(response).trimmed();
+  // Read response using readString (expects \n terminator)
+  // This is the recommended approach from serialib examples
+  char response_buffer[256];
+  int bytes_read = port_->readString(response_buffer, '\n', sizeof(response_buffer) - 1, timeout_ms);
+
+  CAT_TRACE("Simple CAT: received" << bytes_read << "bytes:" << response_buffer);
+
+  if (bytes_read <= 0) {
+    throw error{tr("Simple CAT: no response to command %1 (timeout: %2ms)")
+                .arg(command).arg(timeout_ms)};
+  }
+
+  // Null-terminate the string (readString should do this, but be safe)
+  response_buffer[bytes_read] = '\0';
+
+  auto line = QString::fromUtf8(response_buffer).trimmed();
   if (line.isEmpty()) {
-    throw error{tr("Simple CAT: no response to command %1").arg(command)};
+    throw error{tr("Simple CAT: empty response to command %1").arg(command)};
   }
   if (line.startsWith("ERR")) {
     CAT_TRACE("Simple CAT <<" << line);
@@ -289,45 +320,9 @@ auto SimpleCATTransceiver::parse_mode(QString const &mode) const -> MODE {
 }
 
 void SimpleCATTransceiver::apply_serial_settings() {
-  port_.setBaudRate(params_.baud);
-
-  switch (params_.data_bits) {
-  case TransceiverFactory::seven_data_bits:
-    port_.setDataBits(QSerialPort::Data7);
-    break;
-  case TransceiverFactory::eight_data_bits:
-  case TransceiverFactory::default_data_bits:
-  default:
-    port_.setDataBits(QSerialPort::Data8);
-    break;
-  }
-
-  switch (params_.stop_bits) {
-  case TransceiverFactory::two_stop_bits:
-    port_.setStopBits(QSerialPort::TwoStop);
-    break;
-  case TransceiverFactory::one_stop_bit:
-  case TransceiverFactory::default_stop_bits:
-  default:
-    port_.setStopBits(QSerialPort::OneStop);
-    break;
-  }
-
-  switch (params_.handshake) {
-  case TransceiverFactory::handshake_hardware:
-    port_.setFlowControl(QSerialPort::HardwareControl);
-    break;
-  case TransceiverFactory::handshake_XonXoff:
-    port_.setFlowControl(QSerialPort::SoftwareControl);
-    break;
-  case TransceiverFactory::handshake_none:
-  case TransceiverFactory::handshake_default:
-  default:
-    port_.setFlowControl(QSerialPort::NoFlowControl);
-    break;
-  }
-
-  port_.setParity(QSerialPort::NoParity);
+  // serialib handles serial settings in openDevice()
+  // This function is kept for API compatibility but not used
+  Q_UNUSED(params_);
 }
 
 void SimpleCATTransceiver::ensure_modulator_ready() {
