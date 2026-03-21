@@ -1,0 +1,219 @@
+From b0f151666a308023f27ac55018fc7ea4802bddac Mon Sep 17 00:00:00 2001
+From: Dhiru Kholia <kholia@users.noreply.github.com>
+Date: Mon, 16 Mar 2026 13:13:33 +0530
+Subject: [PATCH 1/1] [v2] Add itone data to the status message packet
+
+This patch adds itone data to the UDP status message packet.
+
+This feature is useful for 'digital transceivers' as they NO longer need
+to rely on the AFP-FSK technique, which introduces a non-zero error into
+the transmitted tone values.
+
+While this approach is not as transparent as the AFP-FSK technique, it
+eliminates the non-zero error associated with AFP-FSK.
+
+As an alternate approach, the 'digital transceivers' can use ft8_lib
+to derive the tones from the 'm_currentMessage' data, which is already a
+part of the status message packet. However, ft8_lib is currently unable
+to handle all the possible types of input messages.
+
+Related:
+
+- https://github.com/kholia/Global-Communications-Transceiver
+- https://qrpguys.com/qrpguys-digital-fsk-transceiver-iii
+- https://github.com/agustinmartino/wsjtx_transceiver_interface
+- https://github.com/agustinmartino/wsjt_transceiver
+
+Testing notes:
+
+This patch was tested with following software:
+
+- https://github.com/bmo/py-wsjtx software
+
+- https://github.com/kholia/py-wsjtx (can show 'itone data')
+
+A packet capture file (.pcapng) which has samples of the new UDP status
+message packets in it can be found at the following URL:
+
+https://github.com/kholia/py-wsjtx
+
+PS: This patch should apply cleanly over 'wsjtx-3.1.0_improved_PLUS_260228.tgz'.
+---
+ .../src/wsjtx/Network/MessageClient.cpp       |  7 +--
+ .../src/wsjtx/Network/MessageClient.hpp       |  2 +-
+ .../src/wsjtx/Network/NetworkMessage.hpp      |  1 +
+ .../src/wsjtx/UDPExamples/MessageServer.cpp   |  6 ++-
+ .../src/wsjtx/UDPExamples/MessageServer.hpp   |  3 +-
+ .../src/wsjtx/widgets/mainwindow.cpp          | 46 ++++++++++++++++++-
+ .../src/wsjtx/widgets/mainwindow.h            |  1 +
+ 7 files changed, 58 insertions(+), 8 deletions(-)
+
+diff --git a/Network/MessageClient.cpp b/Network/MessageClient.cpp
+index 933bc8a..adfbc43 100755
+--- a/Network/MessageClient.cpp
++++ b/Network/MessageClient.cpp
+@@ -586,7 +586,8 @@ void MessageClient::status_update (Frequency f, QString const& mode, QString con
+                                    , bool fast_mode, quint8 special_op_mode
+                                    , quint32 frequency_tolerance, quint32 tr_period
+                                    , QString const& configuration_name
+-                                   , QString const& tx_message)
++                                   , QString const& tx_message
++                                   , QString const& tx_symbols)
+ {
+   if (m_->server_port_ && !m_->server_.isNull ())
+     {
+@@ -596,8 +597,8 @@ void MessageClient::status_update (Frequency f, QString const& mode, QString con
+           << tx_enabled << transmitting << decoding << rx_df << tx_df << de_call.toUtf8 ()
+           << de_grid.toUtf8 () << dx_grid.toUtf8 () << watchdog_timeout << sub_mode.toUtf8 ()
+           << fast_mode << special_op_mode << frequency_tolerance << tr_period << configuration_name.toUtf8 ()
+-          << tx_message.toUtf8 ();
+-      TRACE_UDP ("frequency:" << f << "mode:" << mode << "DX:" << dx_call << "report:" << report << "Tx mode:" << tx_mode << "tx_enabled:" << tx_enabled << "Tx:" << transmitting << "decoding:" << decoding << "Rx df:" << rx_df << "Tx df:" << tx_df << "DE:" << de_call << "DE grid:" << de_grid << "DX grid:" << dx_grid << "w/d t/o:" << watchdog_timeout << "sub_mode:" << sub_mode << "fast mode:" << fast_mode << "spec op mode:" << special_op_mode << "frequency tolerance:" << frequency_tolerance << "T/R period:" << tr_period << "configuration name:" << configuration_name << "Tx message:" << tx_message);
++          << tx_message.toUtf8 () << tx_symbols.toUtf8 ();
++      TRACE_UDP ("frequency:" << f << "mode:" << mode << "DX:" << dx_call << "report:" << report << "Tx mode:" << tx_mode << "tx_enabled:" << tx_enabled << "Tx:" << transmitting << "decoding:" << decoding << "Rx df:" << rx_df << "Tx df:" << tx_df << "DE:" << de_call << "DE grid:" << de_grid << "DX grid:" << dx_grid << "w/d t/o:" << watchdog_timeout << "sub_mode:" << sub_mode << "fast mode:" << fast_mode << "spec op mode:" << special_op_mode << "frequency tolerance:" << frequency_tolerance << "T/R period:" << tr_period << "configuration name:" << configuration_name << "Tx message:" << tx_message << "Tx symbols:" << tx_symbols);
+       m_->send_message (out, message);
+     }
+ }
+diff --git a/Network/MessageClient.hpp b/Network/MessageClient.hpp
+index 1fffda2..088f8c8 100755
+--- a/Network/MessageClient.hpp
++++ b/Network/MessageClient.hpp
+@@ -64,7 +64,7 @@ public:
+                              , QString const& dx_grid, bool watchdog_timeout, QString const& sub_mode
+                              , bool fast_mode, quint8 special_op_mode, quint32 frequency_tolerance
+                              , quint32 tr_period, QString const& configuration_name
+-                             , QString const& tx_message);
++                             , QString const& tx_message, QString const& tx_symbols);
+   Q_SLOT void decode (bool is_new, QTime time, qint32 snr, float delta_time, quint32 delta_frequency
+                       , QString const& mode, QString const& message, bool low_confidence
+                       , bool off_air);
+diff --git a/Network/NetworkMessage.hpp b/Network/NetworkMessage.hpp
+index c046c3d..221ff32 100755
+--- a/Network/NetworkMessage.hpp
++++ b/Network/NetworkMessage.hpp
+@@ -161,6 +161,7 @@
+  *                         T/R Period             quint32
+  *                         Configuration Name     utf8
+  *                         Tx Message             utf8
++ *                         Tx Symbols             utf8
+  *
+  *    WSJT-X  sends this  status message  when various  internal state
+  *    changes to allow the server to  track the relevant state of each
+diff --git a/UDPExamples/MessageServer.cpp b/UDPExamples/MessageServer.cpp
+index 5f3e706..3f42f62 100755
+--- a/UDPExamples/MessageServer.cpp
++++ b/UDPExamples/MessageServer.cpp
+@@ -244,10 +244,11 @@ void MessageServer::impl::parse_message (QHostAddress const& sender, port_type s
+                 quint32 tr_period {quint32_max};
+                 QByteArray configuration_name;
+                 QByteArray tx_message;
++                QByteArray tx_symbols;
+                 in >> f >> mode >> dx_call >> report >> tx_mode >> tx_enabled >> transmitting >> decoding
+                    >> rx_df >> tx_df >> de_call >> de_grid >> dx_grid >> watchdog_timeout >> sub_mode
+                    >> fast_mode >> special_op_mode >> frequency_tolerance >> tr_period >> configuration_name
+-                   >> tx_message;
++                   >> tx_message >> tx_symbols;
+                 if (check_status (in) != Fail)
+                   {
+                     Q_EMIT self_->status_update (client_key, f, QString::fromUtf8 (mode)
+@@ -259,7 +260,8 @@ void MessageServer::impl::parse_message (QHostAddress const& sender, port_type s
+                                                  , QString::fromUtf8 (sub_mode), fast_mode
+                                                  , special_op_mode, frequency_tolerance, tr_period
+                                                  , QString::fromUtf8 (configuration_name)
+-                                                 , QString::fromUtf8 (tx_message));
++                                                 , QString::fromUtf8 (tx_message)
++                                                 , QString::fromUtf8 (tx_symbols));
+                   }
+               }
+               break;
+diff --git a/UDPExamples/MessageServer.hpp b/UDPExamples/MessageServer.hpp
+index 226b4d6..7e86446 100755
+--- a/UDPExamples/MessageServer.hpp
++++ b/UDPExamples/MessageServer.hpp
+@@ -97,7 +97,8 @@ public:
+                                , QString const& de_call, QString const& de_grid, QString const& dx_grid
+                                , bool watchdog_timeout, QString const& sub_mode, bool fast_mode
+                                , quint8 special_op_mode, quint32 frequency_tolerance, quint32 tr_period
+-                               , QString const& configuration_name, QString const& tx_message);
++                               , QString const& configuration_name, QString const& tx_message
++                               , QString const& tx_symbols);
+   Q_SIGNAL void client_closed (ClientKey const&);
+   Q_SIGNAL void decode (bool is_new, ClientKey const&, QTime time, qint32 snr, float delta_time
+                         , quint32 delta_frequency, QString const& mode, QString const& message
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index 462ae40..8efd13d 100755
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -14092,6 +14092,7 @@ void MainWindow::statusUpdate () const
+     {
+       tr_period = quint32_max;
+     }
++
+   m_messageClient->status_update (m_freqNominal, m_mode, m_hisCall,
+                                   QString::number (ui->rptSpinBox->value ()),
+                                   m_mode, ui->autoButton->isChecked (),
+@@ -14102,7 +14103,50 @@ void MainWindow::statusUpdate () const
+                                   submode != QChar::Null ? QString {submode} : QString {}, m_bFastMode,
+                                   static_cast<quint8> (m_specOp),
+                                   ftol, tr_period, m_multi_settings->configuration_name (),
+-                                  m_currentMessage);
++                                  m_currentMessage, getTransmittedSymbols ());
++}
++
++QString MainWindow::getTransmittedSymbols() const
++{
++  if (!m_transmitting) {
++    return {};
++  }
++
++  static const QHash<QString, int> symbol_counts {
++    {"JT4", NUM_JT4_SYMBOLS},
++    {"JT65", NUM_JT65_SYMBOLS},
++    {"JT9", NUM_JT9_SYMBOLS},
++    {"WSPR", NUM_WSPR_SYMBOLS},
++    {"MSK144", NUM_MSK144_SYMBOLS},
++    {"Q65", NUM_Q65_SYMBOLS},
++    {"FT8", NUM_FT8_SYMBOLS},
++    {"FT4", NUM_FT4_SYMBOLS},
++    {"FT2", NUM_FT2_SYMBOLS},
++    {"FST4", NUM_FST4_SYMBOLS},
++    {"FST4W", NUM_FST4_SYMBOLS},
++    {"CW", NUM_CW_SYMBOLS},
++    {"Echo", 6}
++  };
++
++  int nsym = symbol_counts.value(m_mode, 0);
++
++  // Mode-specific overrides
++  if ("FT8" == m_mode && m_config.superFox() && (SpecOp::FOX == m_specOp || SpecOp::HOUND == m_specOp)) {
++    nsym = NUM_SUPERFOX_SYMBOLS;
++  } else if ("MSK144" == m_mode && itone[40] < 0) {
++    nsym = 40;
++  }
++
++  if (nsym <= 0) {
++    return {};
++  }
++
++  QStringList symbols;
++  symbols.reserve(nsym);
++  for (int i = 0; i < nsym; ++i) {
++    symbols << QString::number(itone[i]);
++  }
++  return symbols.join(' ');
+ }
+ 
+ void MainWindow::childEvent (QChildEvent * e)
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index fb3decf..4ae52ed 100755
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -1069,6 +1069,7 @@ private:
+   void update_foxLogWindow_rate();
+   void to_jt9(qint32 n, qint32 istart, qint32 idone);
+   bool is77BitMode () const;
++  QString getTransmittedSymbols() const;
+   void cease_auto_Tx_after_QSO ();
+   Q_SLOT void ARRL_Digi_Display();
+   void ARRL_Digi_Update(DecodedText dt);
+-- 
+2.53.0

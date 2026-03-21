@@ -1,0 +1,128 @@
+diff --git a/Transceiver/SimpleCATTransceiver.cpp b/Transceiver/SimpleCATTransceiver.cpp
+index a3db020..948b5a4 100644
+--- a/Transceiver/SimpleCATTransceiver.cpp
++++ b/Transceiver/SimpleCATTransceiver.cpp
+@@ -8,8 +8,21 @@
+ 
+ #include "moc_SimpleCATTransceiver.cpp"
+ 
++#if defined(Q_OS_WIN32)
++#include <windows.h>
++#endif
++
+ namespace {
+ char const *const simple_cat_transceiver_name{"Simple CAT"};
++
++#if defined(Q_OS_WIN32)
++// Increased timeouts for Windows CDC ACM devices which can be slower to respond
++int const command_timeout_ms {3000};
++int const cdc_acm_settle_ms {500};
++#else
++int const command_timeout_ms {1000};
++int const cdc_acm_settle_ms {250};
++#endif
+ }
+ 
+ void SimpleCATTransceiver::register_transceivers(
+@@ -34,8 +47,25 @@ int SimpleCATTransceiver::do_start() {
+                     .arg(params_.serial_port, port_.errorString())};
+   }
+ 
+-  QThread::msleep(250);
++#if defined(Q_OS_WIN32)
++  // Windows CDC ACM devices need RTS/DTR asserted and time to settle
++  // This is critical for virtual COM ports to work reliably
++  port_.setRequestToSend(true);
++  port_.setDataTerminalReady(true);
++  QThread::msleep(cdc_acm_settle_ms);
++  
++  // Flush any stale data in the buffers
++  port_.clear(QSerialPort::AllDirections);
++  
++  // Additional settle time after clearing
++  QThread::msleep(100);
++  
++  CAT_TRACE("Simple CAT: Windows CDC ACM initialization complete");
++#else
++  QThread::msleep(cdc_acm_settle_ms);
+   port_.clear();
++#endif
++
+   try {
+     send_ok_command("HELP");
+   } catch (std::exception const &e) {
+@@ -54,6 +84,12 @@ void SimpleCATTransceiver::do_stop() {
+   tx_active_ = false;
+   pending_tx_symbols_.clear();
+   if (port_.isOpen()) {
++#if defined(Q_OS_WIN32)
++    // Clear RTS/DTR before closing on Windows to ensure clean shutdown
++    port_.setRequestToSend(false);
++    port_.setDataTerminalReady(false);
++    QThread::msleep(50);
++#endif
+     port_.close();
+   }
+ }
+@@ -166,12 +202,45 @@ QString SimpleCATTransceiver::send_command(QString const &command,
+   auto payload = command.toUtf8();
+   payload.append('\n');
+ 
++  // Use platform-specific default timeout if not specified
++  if (timeout_ms <= 0) {
++    timeout_ms = command_timeout_ms;
++  }
++
++#if defined(Q_OS_WIN32)
++  // Windows CDC ACM devices may need multiple write attempts
++  bool write_success = false;
++  int write_attempts = 0;
++  int const max_write_attempts = 3;
++  
++  while (!write_success && write_attempts < max_write_attempts) {
++    auto bytes_written = port_.write(payload);
++    if (bytes_written == payload.size()) {
++      write_success = port_.waitForBytesWritten(timeout_ms);
++    }
++    if (!write_success) {
++      ++write_attempts;
++      CAT_TRACE("Simple CAT: write attempt" << write_attempts 
++                << "failed, error:" << port_.errorString());
++      if (write_attempts < max_write_attempts) {
++        QThread::msleep(100);
++        port_.clear(QSerialPort::AllDirections);
++      }
++    }
++  }
++  
++  if (!write_success) {
++    throw error{tr("Simple CAT: timeout writing command %1 after %2 attempts: %3")
++                .arg(command).arg(max_write_attempts).arg(port_.errorString())};
++  }
++#else
+   if (port_.write(payload) != payload.size()) {
+     throw error{tr("Simple CAT: failed to write command %1").arg(command)};
+   }
+   if (!port_.waitForBytesWritten(timeout_ms)) {
+     throw error{tr("Simple CAT: timeout writing command %1").arg(command)};
+   }
++#endif
+ 
+   QByteArray response;
+   QElapsedTimer timer;
+@@ -328,6 +397,15 @@ void SimpleCATTransceiver::apply_serial_settings() {
+   }
+ 
+   port_.setParity(QSerialPort::NoParity);
++
++#if defined(Q_OS_WIN32)
++  // Windows CDC ACM devices work best with NoFlowControl explicitly set
++  // and may have issues with hardware flow control signals
++  if (params_.handshake == TransceiverFactory::handshake_default ||
++      params_.handshake == TransceiverFactory::handshake_none) {
++    port_.setFlowControl(QSerialPort::NoFlowControl);
++  }
++#endif
+ }
+ 
+ void SimpleCATTransceiver::ensure_modulator_ready() {

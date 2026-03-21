@@ -1,0 +1,16 @@
+diff --git a/Transceiver/SimpleCATTransceiver.cpp b/Transceiver/SimpleCATTransceiver.cpp
+index 948b5a4..c0d58a4 100644
+--- a/Transceiver/SimpleCATTransceiver.cpp
++++ b/Transceiver/SimpleCATTransceiver.cpp
+@@ -200,7 +200,11 @@ QString SimpleCATTransceiver::send_command(QString const &command,
+   port_.clear(QSerialPort::Input);
+ 
+   auto payload = command.toUtf8();
++#if defined(Q_OS_WIN32)
++  payload.append("\r\n");  // Windows CDC-ACM expects CRLF
++#else
+   payload.append('\n');
++#endif
+ 
+   // Use platform-specific default timeout if not specified
+   if (timeout_ms <= 0) {
