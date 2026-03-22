@@ -1,0 +1,896 @@
+From efbc34a7f52e0f128d969fd43cbab0e7e22cd751 Mon Sep 17 00:00:00 2001
+From: Dhiru Kholia <kholia@users.noreply.github.com>
+Date: Fri, 20 Mar 2026 13:22:07 +0530
+Subject: [PATCH] Add support for 'Simple CAT' based digital transceivers
+
+---
+ CMakeLists.txt                       |   1 +
+ Configuration.cpp                    |  29 +-
+ Configuration.hpp                    |   4 +
+ Transceiver/SimpleCATTransceiver.cpp | 362 +++++++++++++++++++++
+ Transceiver/SimpleCATTransceiver.hpp |  57 ++++
+ Transceiver/Transceiver.cpp          |   7 +-
+ Transceiver/Transceiver.hpp          |   7 +-
+ Transceiver/TransceiverBase.cpp      |   5 +
+ Transceiver/TransceiverBase.hpp      |   1 +
+ Transceiver/TransceiverFactory.cpp   |  11 +
+ widgets/mainwindow.cpp               |  44 +--
+ wsjtx.pro                            |   2 +
+ 12 files changed, 506 insertions(+), 24 deletions(-)
+ create mode 100644 Transceiver/SimpleCATTransceiver.cpp
+ create mode 100644 Transceiver/SimpleCATTransceiver.hpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a109263..c780a2d 100755
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -231,6 +231,7 @@ set (wsjt_qt_CXXSRCS
+   Transceiver/TransceiverFactory.cpp
+   Transceiver/PollingTransceiver.cpp
+   Transceiver/HamlibTransceiver.cpp
++  Transceiver/SimpleCATTransceiver.cpp
+   Transceiver/TCITransceiver.cpp
+   Transceiver/HRDTransceiver.cpp
+   Transceiver/DXLabSuiteCommanderTransceiver.cpp
+diff --git a/Configuration.cpp b/Configuration.cpp
+index 7561eaf..3880812 100755
+--- a/Configuration.cpp
++++ b/Configuration.cpp
+@@ -507,6 +507,7 @@ public:
+   void transceiver_spread (double);
+   void transceiver_nsym (int);
+   void transceiver_trfrequency (double);
++  void transceiver_tx_symbols (QString const&);
+   void transceiver_volume (double);
+   void transceiver_txvolume (double);
+   void sync_transceiver (bool force_signal);
+@@ -1213,6 +1214,11 @@ bool Configuration::is_tci () const
+   return m_->is_tci_;
+ }
+ 
++bool Configuration::is_simple_cat () const
++{
++  return m_->rig_params_.rig_name == "Simple CAT";
++}
++
+ bool Configuration::transceiver_online ()
+ {
+   LOG_TRACE (m_->cached_rig_state_);
+@@ -1330,6 +1336,15 @@ void Configuration::transceiver_trfrequency (double trfrequency)
+   m_->transceiver_trfrequency (trfrequency);
+ }
+ 
++void Configuration::transceiver_tx_symbols (QString const& tx_symbols)
++{
++#if WSJT_TRACE_CAT
++  qDebug () << "Configuration::transceiver_tx_symbols:" << tx_symbols << m_->cached_rig_state_;
++#endif
++
++  m_->transceiver_tx_symbols (tx_symbols);
++}
++
+ void Configuration::transceiver_txvolume (qreal txvolume)
+ {
+ #if WSJT_TRACE_CAT
+@@ -5289,6 +5304,17 @@ void Configuration::impl::transceiver_trfrequency (double trfrequency)
+   }
+ }
+ 
++void Configuration::impl::transceiver_tx_symbols (QString const& tx_symbols)
++{
++  cached_rig_state_.online (true); // we want the rig online
++  set_cached_mode ();
++  if (cached_rig_state_.tx_symbols() != tx_symbols)
++  {
++    cached_rig_state_.tx_symbols (tx_symbols);
++    Q_EMIT set_transceiver (cached_rig_state_, ++transceiver_command_number_);
++  }
++}
++
+ void Configuration::impl::transceiver_txvolume (double txvolume)
+ {
+   cached_rig_state_.online (true); // we want the rig online
+@@ -5317,7 +5343,8 @@ void Configuration::impl::transceiver_modulator_start (QString jtmode, unsigned
+ {
+   cached_rig_state_.online (true); // we want the rig online
+   set_cached_mode ();
+-  if (!cached_rig_state_.tx_audio())
++  bool const force_refresh {"Simple CAT" == rig_params_.rig_name};
++  if (!cached_rig_state_.tx_audio() || force_refresh)
+   {
+     cached_rig_state_.tx_audio (true);
+     cached_rig_state_.symbolslength (symbolslength);
+diff --git a/Configuration.hpp b/Configuration.hpp
+index 83e6cbc..2e95c66 100755
+--- a/Configuration.hpp
++++ b/Configuration.hpp
+@@ -356,6 +356,7 @@ public:
+   // check if a real rig is configured
+   bool is_dummy_rig () const;
+   bool is_tci () const;
++  bool is_simple_cat () const;
+ 
+   // Frequency resolution of the rig
+   //
+@@ -426,6 +427,9 @@ public:
+   //
+   Q_SLOT void transceiver_trfrequency (double = 1500.0);
+ 
++  // Set transmitted symbol string for remote modulators.
++  Q_SLOT void transceiver_tx_symbols (QString const&);
++
+   // Attempt to (re-)synchronise transceiver state.
+   //
+   // Force signal guarantees either a transceiver_update or a
+diff --git a/Transceiver/SimpleCATTransceiver.cpp b/Transceiver/SimpleCATTransceiver.cpp
+new file mode 100644
+index 0000000..a3db020
+--- /dev/null
++++ b/Transceiver/SimpleCATTransceiver.cpp
+@@ -0,0 +1,362 @@
++#include "SimpleCATTransceiver.hpp"
++
++#include <QByteArray>
++#include <QElapsedTimer>
++#include <QRegularExpression>
++#include <QStringList>
++#include <QThread>
++
++#include "moc_SimpleCATTransceiver.cpp"
++
++namespace {
++char const *const simple_cat_transceiver_name{"Simple CAT"};
++}
++
++void SimpleCATTransceiver::register_transceivers(
++    logger_type *, TransceiverFactory::Transceivers *registry, unsigned id) {
++  (*registry)[simple_cat_transceiver_name] = TransceiverFactory::Capabilities{
++      id, TransceiverFactory::Capabilities::serial, true};
++}
++
++SimpleCATTransceiver::SimpleCATTransceiver(
++    logger_type *logger, TransceiverFactory::ParameterPack const &params,
++    QObject *parent)
++    : PollingTransceiver{logger, params.poll_interval, parent},
++      params_{params} {}
++
++int SimpleCATTransceiver::do_start() {
++  CAT_TRACE("Simple CAT start on" << params_.serial_port);
++  port_.setPortName(params_.serial_port);
++  apply_serial_settings();
++
++  if (!port_.open(QIODevice::ReadWrite)) {
++    throw error{tr("Simple CAT: cannot open serial port %1: %2")
++                    .arg(params_.serial_port, port_.errorString())};
++  }
++
++  QThread::msleep(250);
++  port_.clear();
++  try {
++    send_ok_command("HELP");
++  } catch (std::exception const &e) {
++    CAT_TRACE("Simple CAT optional HELP probe failed:" << e.what());
++  }
++  refresh_state();
++  return 0;
++}
++
++void SimpleCATTransceiver::do_stop() {
++  CAT_TRACE("Simple CAT stop" << "ptt_requested=" << ptt_requested_
++                              << "modulator_ready=" << modulator_ready_
++                              << "tx_active=" << tx_active_);
++  ptt_requested_ = false;
++  modulator_ready_ = false;
++  tx_active_ = false;
++  pending_tx_symbols_.clear();
++  if (port_.isOpen()) {
++    port_.close();
++  }
++}
++
++void SimpleCATTransceiver::do_frequency(Frequency f, MODE m, bool) {
++  send_ok_command(QString{"FREQ %1"}.arg(f));
++  update_rx_frequency(f);
++  update_other_frequency(0);
++  update_split(false);
++  if (m != UNK) {
++    do_mode(m);
++  }
++}
++
++void SimpleCATTransceiver::do_tx_frequency(Frequency f, MODE, bool) {
++  update_other_frequency(f);
++  update_split(f != 0);
++}
++
++void SimpleCATTransceiver::do_mode(MODE mode) {
++  auto command_mode = map_mode(mode);
++  if (command_mode.isEmpty()) {
++    return;
++  }
++
++  send_ok_command(QString{"MODE %1"}.arg(command_mode));
++  update_mode(mode);
++}
++
++void SimpleCATTransceiver::do_ptt(bool on) {
++  CAT_TRACE("Simple CAT do_ptt"
++            << "on=" << on << "modulator_ready=" << modulator_ready_
++            << "tx_active=" << tx_active_
++            << "symbols_empty=" << pending_tx_symbols_.isEmpty());
++  ptt_requested_ = on;
++  if (!on) {
++    modulator_ready_ = false;
++    send_ok_command(tx_active_ ? "TX OFF" : "PTT OFF");
++    tx_active_ = false;
++    pending_tx_symbols_.clear();
++    update_PTT(false);
++    return;
++  }
++
++  if (modulator_ready_ || !pending_tx_symbols_.isEmpty()) {
++    ensure_modulator_ready();
++    maybe_finish_deferred_ptt();
++  } else {
++    send_ok_command("PTT ON");
++    update_PTT(true);
++  }
++}
++
++void SimpleCATTransceiver::do_trfrequency(double trfrequency) {
++  pending_offset_hz_ = qMax(0, qRound(trfrequency));
++}
++
++void SimpleCATTransceiver::do_tx_symbols(QString const &tx_symbols) {
++  auto simplified = tx_symbols.simplified();
++  if (simplified.isEmpty() &&
++      (ptt_requested_ || tx_active_ || modulator_ready_)) {
++    CAT_TRACE(
++        "Simple CAT ignoring empty tx_symbols while TX is active/pending");
++    return;
++  }
++
++  pending_tx_symbols_ = simplified;
++  CAT_TRACE("Simple CAT tx_symbols length=" << pending_tx_symbols_.size()
++                                            << "value=" << pending_tx_symbols_);
++}
++
++void SimpleCATTransceiver::do_modulator_start(QString mode, unsigned, double,
++                                              double frequency, double, bool,
++                                              bool, double, double) {
++  pending_digital_mode_ = mode.contains("FT4") ? "FT4" : "FT8";
++  pending_offset_hz_ = qMax(0, qRound(frequency));
++  CAT_TRACE("Simple CAT modulator_start"
++            << "mode=" << pending_digital_mode_
++            << "offset=" << pending_offset_hz_
++            << "symbols_empty=" << pending_tx_symbols_.isEmpty()
++            << "ptt_requested=" << ptt_requested_);
++  ensure_modulator_ready();
++  maybe_finish_deferred_ptt();
++}
++
++void SimpleCATTransceiver::do_modulator_stop(bool) {
++  CAT_TRACE("Simple CAT modulator_stop" << "tx_active=" << tx_active_
++                                        << "ptt_requested=" << ptt_requested_);
++  if (tx_active_ || ptt_requested_ || modulator_ready_) {
++    send_ok_command("ABORT");
++    tx_active_ = false;
++    update_PTT(false);
++  }
++  modulator_ready_ = false;
++  ptt_requested_ = false;
++  pending_tx_symbols_.clear();
++}
++
++void SimpleCATTransceiver::do_poll() { refresh_state(); }
++
++QString SimpleCATTransceiver::send_command(QString const &command,
++                                           int timeout_ms) {
++  if (!port_.isOpen()) {
++    throw error{tr("Simple CAT: serial port is not open")};
++  }
++
++  CAT_TRACE("Simple CAT >>" << command);
++  port_.clear(QSerialPort::Input);
++
++  auto payload = command.toUtf8();
++  payload.append('\n');
++
++  if (port_.write(payload) != payload.size()) {
++    throw error{tr("Simple CAT: failed to write command %1").arg(command)};
++  }
++  if (!port_.waitForBytesWritten(timeout_ms)) {
++    throw error{tr("Simple CAT: timeout writing command %1").arg(command)};
++  }
++
++  QByteArray response;
++  QElapsedTimer timer;
++  timer.start();
++  while (timer.elapsed() < timeout_ms) {
++    if (port_.canReadLine()) {
++      response += port_.readLine();
++      break;
++    }
++
++    auto remaining = timeout_ms - static_cast<int>(timer.elapsed());
++    if (remaining <= 0 || !port_.waitForReadyRead(remaining)) {
++      continue;
++    }
++    response += port_.readAll();
++    if (response.contains('\n')) {
++      break;
++    }
++  }
++
++  auto line = QString::fromUtf8(response).trimmed();
++  if (line.isEmpty()) {
++    throw error{tr("Simple CAT: no response to command %1").arg(command)};
++  }
++  if (line.startsWith("ERR")) {
++    CAT_TRACE("Simple CAT <<" << line);
++    throw error{tr("Simple CAT: %1").arg(line)};
++  }
++  CAT_TRACE("Simple CAT <<" << line);
++  return line;
++}
++
++void SimpleCATTransceiver::send_ok_command(QString const &command,
++                                           QString const &expected_prefix) {
++  auto response = send_command(command);
++  if (!response.startsWith(expected_prefix)) {
++    throw error{
++        tr("Simple CAT: unexpected response to %1: %2").arg(command, response)};
++  }
++}
++
++void SimpleCATTransceiver::refresh_state() {
++  auto freq_response = send_command("FREQ");
++  auto mode_response = send_command("MODE");
++  auto ptt_response = send_command("PTT");
++  QString parsed_mode{"UNK"};
++  quint64 parsed_frequency{0};
++  bool parsed_ptt{false};
++
++  auto freq_parts = freq_response.split(' ', Qt::SkipEmptyParts);
++  if (freq_parts.size() == 2) {
++    bool ok = false;
++    auto frequency = freq_parts[1].toULongLong(&ok);
++    if (ok) {
++      parsed_frequency = frequency;
++      update_rx_frequency(frequency);
++      update_other_frequency(0);
++      update_split(false);
++    }
++  }
++
++  auto mode_parts = mode_response.split(' ', Qt::SkipEmptyParts);
++  if (mode_parts.size() == 2) {
++    parsed_mode = mode_parts[1];
++    update_mode(parse_mode(mode_parts[1]));
++  }
++
++  auto ptt_parts = ptt_response.split(' ', Qt::SkipEmptyParts);
++  if (ptt_parts.size() == 2) {
++    auto ptt_on = ptt_parts[1] == "ON";
++    parsed_ptt = ptt_on;
++    if (!ptt_on) {
++      tx_active_ = false;
++    }
++    update_PTT(ptt_on);
++  }
++
++  CAT_TRACE("Simple CAT poll" << "freq=" << parsed_frequency
++                              << "mode=" << parsed_mode << "ptt=" << parsed_ptt
++                              << "tx_active=" << tx_active_);
++}
++
++QString SimpleCATTransceiver::map_mode(MODE mode) const {
++  switch (mode) {
++  case USB:
++  case DIG_U:
++    return "USB";
++  case LSB:
++  case DIG_L:
++    return "LSB";
++  case AM:
++    return "AM";
++  case FM:
++  case DIG_FM:
++    return "FM";
++  default:
++    return {};
++  }
++}
++
++auto SimpleCATTransceiver::parse_mode(QString const &mode) const -> MODE {
++  if (mode == "USB") {
++    return USB;
++  }
++  if (mode == "LSB") {
++    return LSB;
++  }
++  if (mode == "AM") {
++    return AM;
++  }
++  if (mode == "FM") {
++    return FM;
++  }
++  return UNK;
++}
++
++void SimpleCATTransceiver::apply_serial_settings() {
++  port_.setBaudRate(params_.baud);
++
++  switch (params_.data_bits) {
++  case TransceiverFactory::seven_data_bits:
++    port_.setDataBits(QSerialPort::Data7);
++    break;
++  case TransceiverFactory::eight_data_bits:
++  case TransceiverFactory::default_data_bits:
++  default:
++    port_.setDataBits(QSerialPort::Data8);
++    break;
++  }
++
++  switch (params_.stop_bits) {
++  case TransceiverFactory::two_stop_bits:
++    port_.setStopBits(QSerialPort::TwoStop);
++    break;
++  case TransceiverFactory::one_stop_bit:
++  case TransceiverFactory::default_stop_bits:
++  default:
++    port_.setStopBits(QSerialPort::OneStop);
++    break;
++  }
++
++  switch (params_.handshake) {
++  case TransceiverFactory::handshake_hardware:
++    port_.setFlowControl(QSerialPort::HardwareControl);
++    break;
++  case TransceiverFactory::handshake_XonXoff:
++    port_.setFlowControl(QSerialPort::SoftwareControl);
++    break;
++  case TransceiverFactory::handshake_none:
++  case TransceiverFactory::handshake_default:
++  default:
++    port_.setFlowControl(QSerialPort::NoFlowControl);
++    break;
++  }
++
++  port_.setParity(QSerialPort::NoParity);
++}
++
++void SimpleCATTransceiver::ensure_modulator_ready() {
++  if (modulator_ready_) {
++    return;
++  }
++
++  send_ok_command(QString{"DIGMODE %1"}.arg(pending_digital_mode_));
++  send_ok_command(QString{"OFFSET %1"}.arg(pending_offset_hz_));
++  if (!pending_tx_symbols_.isEmpty()) {
++    send_ok_command(QString{"ITONE %1"}.arg(pending_tx_symbols_));
++  }
++
++  modulator_ready_ = true;
++  CAT_TRACE("Simple CAT ensure_modulator_ready"
++            << "mode=" << pending_digital_mode_
++            << "offset=" << pending_offset_hz_
++            << "symbols_empty=" << pending_tx_symbols_.isEmpty());
++}
++
++void SimpleCATTransceiver::maybe_finish_deferred_ptt() {
++  CAT_TRACE("Simple CAT maybe_finish_deferred_ptt"
++            << "ptt_requested=" << ptt_requested_ << "modulator_ready="
++            << modulator_ready_ << "tx_active=" << tx_active_);
++  if (ptt_requested_ && modulator_ready_ && !tx_active_) {
++    send_ok_command("TX ON");
++    tx_active_ = true;
++    update_PTT(true);
++  } else if (ptt_requested_ && modulator_ready_ && tx_active_) {
++    CAT_TRACE("Simple CAT skipping duplicate TX ON");
++  }
++}
+diff --git a/Transceiver/SimpleCATTransceiver.hpp b/Transceiver/SimpleCATTransceiver.hpp
+new file mode 100644
+index 0000000..f5a1eb3
+--- /dev/null
++++ b/Transceiver/SimpleCATTransceiver.hpp
+@@ -0,0 +1,57 @@
++#ifndef SIMPLE_CAT_TRANSCEIVER_HPP__
++#define SIMPLE_CAT_TRANSCEIVER_HPP__
++
++#include <QString>
++
++#include <QtSerialPort/QSerialPort>
++
++#include "PollingTransceiver.hpp"
++#include "TransceiverFactory.hpp"
++
++class SimpleCATTransceiver final : public PollingTransceiver {
++  Q_OBJECT
++
++public:
++  static void register_transceivers(logger_type *,
++                                    TransceiverFactory::Transceivers *,
++                                    unsigned id);
++
++  explicit SimpleCATTransceiver(logger_type *,
++                                TransceiverFactory::ParameterPack const &,
++                                QObject *parent = nullptr);
++
++private:
++  int do_start() override;
++  void do_stop() override;
++  void do_frequency(Frequency, MODE, bool no_ignore) override;
++  void do_tx_frequency(Frequency, MODE, bool no_ignore) override;
++  void do_mode(MODE) override;
++  void do_ptt(bool) override;
++  void do_trfrequency(double) override;
++  void do_tx_symbols(QString const &) override;
++  void do_modulator_start(QString, unsigned, double, double, double, bool, bool,
++                          double, double) override;
++  void do_modulator_stop(bool) override;
++  void do_poll() override;
++
++  QString send_command(QString const &command, int timeout_ms = 1000);
++  void send_ok_command(QString const &command,
++                       QString const &expected_prefix = "OK");
++  void refresh_state();
++  QString map_mode(MODE) const;
++  MODE parse_mode(QString const &) const;
++  void apply_serial_settings();
++  void ensure_modulator_ready();
++  void maybe_finish_deferred_ptt();
++
++  TransceiverFactory::ParameterPack params_;
++  QSerialPort port_;
++  QString pending_tx_symbols_;
++  QString pending_digital_mode_{"FT8"};
++  quint32 pending_offset_hz_{1500u};
++  bool ptt_requested_{false};
++  bool modulator_ready_{false};
++  bool tx_active_{false};
++};
++
++#endif
+diff --git a/Transceiver/Transceiver.cpp b/Transceiver/Transceiver.cpp
+index 8c25036..b963e30 100755
+--- a/Transceiver/Transceiver.cpp
++++ b/Transceiver/Transceiver.cpp
+@@ -38,8 +38,9 @@ QDebug operator << (QDebug d, Transceiver::TransceiverState const& s)
+     << "; LEVEL: " << s.level_ << "dBm"
+     << "; POWER: " << s.power_ << "mWatts"
+     << "; SWR: " << s.swr_
++    << "; TX_SYMBOLS: " << s.tx_symbols_
+     << ")\n";
+-  return d.space (); 
++  return d.space ();
+ }
+ #endif
+ 
+@@ -58,6 +59,7 @@ std::ostream& operator << (std::ostream& os, Transceiver::TransceiverState const
+     << "; PTT: " << (s.ptt_ ? "on" : "off")
+     << "; POWER: " << s.power_ << "mWatts"
+     << "; SWR: " << s.swr_
++    << "; TX_SYMBOLS: " << s.tx_symbols_.toStdString ()
+     << "; TUNE: " << s.tune_
+     << ")\n";
+ }
+@@ -93,7 +95,8 @@ bool operator != (Transceiver::TransceiverState const& lhs, Transceiver::Transce
+     || lhs.txvolume_ != rhs.txvolume_
+     || lhs.level_ != rhs.level_
+     || lhs.power_ != rhs.power_
+-    || lhs.swr_ != rhs.swr_;
++    || lhs.swr_ != rhs.swr_
++    || lhs.tx_symbols_ != rhs.tx_symbols_;
+ }
+ 
+ bool operator == (Transceiver::TransceiverState const& lhs, Transceiver::TransceiverState const& rhs)
+diff --git a/Transceiver/Transceiver.hpp b/Transceiver/Transceiver.hpp
+index 3559187..977c133 100755
+--- a/Transceiver/Transceiver.hpp
++++ b/Transceiver/Transceiver.hpp
+@@ -7,12 +7,11 @@
+ #include <boost/log/sources/severity_channel_logger.hpp>
+ 
+ #include <QObject>
++#include <QString>
+ 
+ #include "qt_helpers.hpp"
+ #include "Radio.hpp"
+ 
+-class QString;
+-
+ //
+ // Abstract Transceiver Interface
+ //
+@@ -108,6 +107,7 @@ public:
+       , swr_ {0}
+       , jtmode_ {"FT8"}  //w3sz tci
+       , fastmode_ {false}  //w3sz tci
++      , tx_symbols_ {}
+     {
+     }
+ 
+@@ -139,6 +139,7 @@ public:
+     unsigned int swr () const {return swr_;}
+     QString jtmode () const {return jtmode_;}  //w3sz tci
+     bool fastmode () const {return fastmode_;}  //w3sz tci
++    QString tx_symbols () const {return tx_symbols_;}
+ 
+     void online (bool state) {online_ = state;}
+     void frequency (Frequency f) {rx_frequency_ = f;}
+@@ -168,6 +169,7 @@ public:
+     void swr (unsigned int mswr) {swr_ = mswr;}
+     void jtmode(QString jtmode) {jtmode_ = jtmode;}  //w3sz tci
+     void fastmode(bool fastmode) {fastmode_ = fastmode;}  //w3sz tci
++    void tx_symbols(QString const& tx_symbols) {tx_symbols_ = tx_symbols;}
+ 
+   private:
+     bool online_;
+@@ -198,6 +200,7 @@ public:
+     unsigned int swr_;
+     QString jtmode_;  //w3sz tci
+     bool fastmode_;  //w3sz tci
++    QString tx_symbols_;
+ 
+     // Don't forget to update the debug print and != operator if you
+     // add more members here
+diff --git a/Transceiver/TransceiverBase.cpp b/Transceiver/TransceiverBase.cpp
+index c010783..db3fcc8 100755
+--- a/Transceiver/TransceiverBase.cpp
++++ b/Transceiver/TransceiverBase.cpp
+@@ -98,6 +98,11 @@ void TransceiverBase::set (TransceiverState const& s,
+             audio_cmd = true;
+             requested_.trfrequency (s.trfrequency ());
+           }
++          if (requested_.tx_symbols() != s.tx_symbols()) {
++            do_tx_symbols (s.tx_symbols());
++            audio_cmd = true;
++            requested_.tx_symbols (s.tx_symbols ());
++          }
+           if (requested_.audio() != s.audio()) {
+             do_audio (s.audio());
+             audio_cmd = true;
+diff --git a/Transceiver/TransceiverBase.hpp b/Transceiver/TransceiverBase.hpp
+index 7088787..f480eb0 100755
+--- a/Transceiver/TransceiverBase.hpp
++++ b/Transceiver/TransceiverBase.hpp
+@@ -123,6 +123,7 @@ protected:
+   virtual void do_trfrequency(double) {}
+   virtual void do_volume (qreal) {}
+   virtual void do_txvolume (qreal) {}
++  virtual void do_tx_symbols(QString const&) {}
+   //parameters are MODE,symbolslength,framespersymbol,trfrequency,tonespacing,synchronize,FASTMODE,dbsdr,trperiod //parameters added by w3sz are in bold
+   virtual void do_modulator_start(QString, unsigned, double, double, double, bool, bool, double, double) {}
+   virtual void do_modulator_stop(bool) {}
+diff --git a/Transceiver/TransceiverFactory.cpp b/Transceiver/TransceiverFactory.cpp
+index 2146eac..49ddad9 100755
+--- a/Transceiver/TransceiverFactory.cpp
++++ b/Transceiver/TransceiverFactory.cpp
+@@ -3,6 +3,7 @@
+ #include <QMetaType>
+ 
+ #include "HamlibTransceiver.hpp"
++#include "SimpleCATTransceiver.hpp"
+ #include "TCITransceiver.hpp"
+ #include "DXLabSuiteCommanderTransceiver.hpp"
+ #include "HRDTransceiver.hpp"
+@@ -27,6 +28,7 @@ namespace
+       NonHamlibBaseId = 99899
+       , TCI1Id
+       , TCI2Id
++      , SimpleCATId
+       , CommanderId
+       , HRDId
+       , OmniRigOneId
+@@ -38,6 +40,7 @@ TransceiverFactory::TransceiverFactory ()
+   : logger_ (boost::log::keywords::channel = "RIGCTRL")
+ {
+   HamlibTransceiver::register_transceivers (&logger_, &transceivers_);
++  SimpleCATTransceiver::register_transceivers (&logger_, &transceivers_, SimpleCATId);
+   TCITransceiver::register_transceivers (&logger_, &transceivers_, TCI1Id, TCI2Id);
+   DXLabSuiteCommanderTransceiver::register_transceivers (&logger_, &transceivers_, CommanderId);
+   HRDTransceiver::register_transceivers (&logger_, &transceivers_, HRDId);
+@@ -116,6 +119,14 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& pa
+       }
+       break;
+ 
++    case SimpleCATId:
++      result.reset (new SimpleCATTransceiver {&logger_, params});
++      if (target_thread)
++        {
++          result->moveToThread (target_thread);
++        }
++      break;
++
+     case CommanderId:
+       {
+         std::unique_ptr<TransceiverBase> basic_transceiver;
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index 82cba5e..bb87bb3 100755
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -8531,17 +8531,18 @@ void MainWindow::useNextCall()
+ }
+ 
+ void MainWindow::startTx2()
+-{    
++{
+   bool modulator_active;
+-  bool tci_active = m_tci_audio;
+-  if (tci_active) modulator_active=m_tci_mod_active;
+-  else modulator_active=m_modulator->isActive ();
++  bool remote_modulator = m_tci_audio || m_config.is_simple_cat ();
++  if (m_tci_audio) modulator_active = m_tci_mod_active;
++  else if (m_config.is_simple_cat ()) modulator_active = false;
++  else modulator_active = m_modulator->isActive ();
+     if (!modulator_active) { // TODO - not thread safe
+     double fSpread=0.0;
+     double snr=99.0;
+     QString t=ui->tx5->currentText();
+     if(t.mid(0,1)=="#") fSpread=t.mid(1,5).toDouble();
+-    if (tci_active) Q_EMIT m_config.transceiver_spread(fSpread);
++    if (remote_modulator) Q_EMIT m_config.transceiver_spread(fSpread);
+     else m_modulator->setSpread(fSpread); // TODO - not thread safe
+     t=ui->tx6->text();
+     if(t.mid(0,1)=="#") snr=t.mid(1,5).toDouble();
+@@ -8570,7 +8571,7 @@ void MainWindow::startTx2()
+ 
+ void MainWindow::stopTx()
+ {
+-  if (m_tci_audio) Q_EMIT m_config.transceiver_modulator_stop();
++  if (m_tci_audio || m_config.is_simple_cat ()) Q_EMIT m_config.transceiver_modulator_stop();
+   else Q_EMIT endTransmitMessage ();
+   m_btxok = false;
+   m_transmitting = false;
+@@ -8579,7 +8580,7 @@ void MainWindow::stopTx()
+     tx_status_label.setStyleSheet("");
+     tx_status_label.setText("");
+   }
+-  if (m_tci_audio) {
++  if (m_tci_audio || m_config.is_simple_cat ()) {
+     ptt0Timer.start(0);
+   } else {
+     ptt0Timer.start(200);                //end-of-transmission sequencer delay
+@@ -8590,7 +8591,7 @@ void MainWindow::stopTx()
+ 
+ void MainWindow::stopTx2()
+ {
+-  if (m_tci_audio) {
++  if (m_tci_audio || m_config.is_simple_cat ()) {
+       Q_EMIT m_config.transceiver_ptt (false);      //Lower PTT
+       monitor (true);
+       statusUpdate ();
+@@ -12732,12 +12733,17 @@ void MainWindow::rigFailure (QString const& reason)
+ 
+ void MainWindow::transmit (double snr)
+ {
++  bool const remote_modulator {m_tci_audio || m_config.is_simple_cat ()};
++  if (m_config.is_simple_cat ()) {
++    Q_EMIT m_config.transceiver_tx_symbols (getTransmittedSymbols ());
++  }
++
+   double toneSpacing=0.0;
+   if (m_mode == "JT65") {
+     if(m_nSubMode==0) toneSpacing=11025.0/4096.0;
+     if(m_nSubMode==1) toneSpacing=2*11025.0/4096.0;
+     if(m_nSubMode==2) toneSpacing=4*11025.0/4096.0;
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT65_SYMBOLS,
+              4096.0*12000.0/11025.0, ui->TxFreqSpinBox->value () - m_XIT,
+              toneSpacing,true,false,snr,m_TRperiod);
+@@ -12762,7 +12768,7 @@ void MainWindow::transmit (double snr)
+     if(m_config.x4ToneSpacing()) toneSpacing=4*12000.0/1920.0;
+     if(SpecOp::FOX==m_specOp and !m_tune) toneSpacing=-1;
+     if(SpecOp::FOX==m_specOp and m_config.superFox()) {
+-      if (m_tci_audio) {
++      if (remote_modulator) {
+         Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_SUPERFOX_SYMBOLS,
+             1024.0,ui->TxFreqSpinBox->value()-m_XIT,
+             toneSpacing,true,false,snr,m_TRperiod);
+@@ -12773,7 +12779,7 @@ void MainWindow::transmit (double snr)
+             true, false, snr, m_TRperiod);
+       }
+     } else {
+-        if (m_tci_audio) {
++        if (remote_modulator) {
+           Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT8_SYMBOLS,
+               1920.0,ui->TxFreqSpinBox->value()-m_XIT,
+               toneSpacing,true,false,snr,m_TRperiod);
+@@ -12789,7 +12795,7 @@ void MainWindow::transmit (double snr)
+   if (m_mode == "FT4") {
+     m_dateTimeSentTx3=QDateTime::currentDateTimeUtc();
+     toneSpacing=-2.0;                     //Transmit a pre-computed, filtered waveform.
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT4_SYMBOLS,
+              576.0,ui->TxFreqSpinBox->value()-m_XIT,
+              toneSpacing,true,false,snr,m_TRperiod);
+@@ -12827,7 +12833,7 @@ void MainWindow::transmit (double snr)
+     double f0=ui->WSPRfreqSpinBox->value() - m_XIT;
+     if(m_mode=="FST4") f0=ui->TxFreqSpinBox->value() - m_XIT;
+     if(!m_tune) f0 += 1.5*dfreq;
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FST4_SYMBOLS,double(nsps),f0,toneSpacing,
+              true,false,snr,m_TRperiod);
+     } else {
+@@ -12846,7 +12852,7 @@ void MainWindow::transmit (double snr)
+     int mode65=pow(2.0,double(m_nSubMode));
+     toneSpacing=mode65*12000.0/nsps;
+ //    toneSpacing=-4.0;
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_Q65_SYMBOLS,
+              double(nsps),ui->TxFreqSpinBox->value()-m_XIT,
+              toneSpacing,true,false,snr,m_TRperiod);
+@@ -12871,7 +12877,7 @@ void MainWindow::transmit (double snr)
+       sps=nsps[m_nSubMode-4];
+       m_toneSpacing=12000.0/sps;
+     }
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT9_SYMBOLS,sps,
+              ui->TxFreqSpinBox->value()-m_XIT,
+              m_toneSpacing,true,fastmode,snr,m_TRperiod);
+@@ -12897,7 +12903,7 @@ void MainWindow::transmit (double snr)
+     int nsym;
+     nsym=NUM_MSK144_SYMBOLS;
+     if(itone[40] < 0) nsym=40;
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, nsym,double(m_nsps),f0, m_toneSpacing,
+              true,true,snr,m_TRperiod);
+     } else {
+@@ -12915,7 +12921,7 @@ void MainWindow::transmit (double snr)
+     if(m_nSubMode==4) toneSpacing=18*4.375;
+     if(m_nSubMode==5) toneSpacing=36*4.375;
+     if(m_nSubMode==6) toneSpacing=72*4.375;
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT4_SYMBOLS,
+              2520.0*12000.0/11025.0,ui->TxFreqSpinBox->value()-m_XIT,
+              toneSpacing,true,false,snr,m_TRperiod);
+@@ -12931,7 +12937,7 @@ void MainWindow::transmit (double snr)
+     int nToneSpacing=1;
+     if(m_config.x2ToneSpacing()) nToneSpacing=2;
+     if(m_config.x4ToneSpacing()) nToneSpacing=4;
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_WSPR_SYMBOLS,8192.0,
+              ui->TxFreqSpinBox->value() - 1.5 * 12000 / 8192,
+              m_toneSpacing*nToneSpacing,true,false,snr,
+@@ -12981,7 +12987,7 @@ void MainWindow::transmit (double snr)
+     }
+ 
+     m_msEchoTxStart=QDateTime::currentMSecsSinceEpoch();
+-    if (m_tci_audio) {
++    if (remote_modulator) {
+       Q_EMIT m_config.transceiver_modulator_start(m_mode,numEchoSymbols,framesPerSymbol,freq,toneSpacing,
+              false,false,snr,m_TRperiod);
+     } else {
+diff --git a/wsjtx.pro b/wsjtx.pro
+index a9bcc13..ba91ef4 100755
+--- a/wsjtx.pro
++++ b/wsjtx.pro
+@@ -69,6 +69,7 @@ SOURCES += \
+   Transceiver/HamlibTransceiver.cpp \
+   Transceiver/OmniRigTransceiver.cpp \
+   Transceiver/PollingTransceiver.cpp \
++  Transceiver/SimpleCATTransceiver.cpp \
+   Transceiver/TCITransceiver.cpp \
+   Transceiver/Transceiver.cpp \
+   Transceiver/TransceiverBase.cpp \
+@@ -90,6 +91,7 @@ HEADERS  += qt_helpers.hpp qt_db_helpers.hpp \
+   Transceiver/HamlibTransceiver.hpp \
+   Transceiver/OmniRigTransceiver.hpp \
+   Transceiver/PollingTransceiver.hpp \
++  Transceiver/SimpleCATTransceiver.hpp \
+   Transceiver/TCITransceiver.hpp \
+   Transceiver/TCITransceiver_modified_but_not_yet_working.hpp \
+   Transceiver/Transceiver.hpp \
+-- 
+2.53.0
+
