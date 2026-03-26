@@ -1147,7 +1147,6 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
   m_tci = m_config.is_tci();
   m_tci_audio = (m_config.tci_audio() && m_config.is_tci());
 
-  // Initialize audio streams unless TCI-only remote audio
   if (!m_tci_audio) {
     if (!m_config.audio_input_device ().isNull ())
       {
@@ -3576,9 +3575,7 @@ void MainWindow::on_actionSettings_triggered()           // Setup Dialog (Settin
 
     m_tci_audio = (m_config.tci_audio() && m_config.is_tci());  // update m_tci_audio
     bool was_monitoring = m_monitoring;
-    // Restart monitoring if TCI audio changed or if Simple CAT
     if (m_monitoring && (m_config.restart_tci () or !m_tci_audio)) on_monitorButton_clicked (false);
-    // Initialize audio streams unless TCI-only remote audio
     if (!m_tci_audio) {
       if(m_config.restart_audio_input () && !m_config.audio_input_device ().isNull ()) {
         Q_EMIT startAudioInputStream (m_config.audio_input_device ()
@@ -7995,14 +7992,6 @@ void MainWindow::guiUpdate()
           char ft4msgbits[77];
           genft4_(message, &ichk, msgsent, const_cast<char *> (ft4msgbits),
                   const_cast<int *>(itone), (FCL)37, (FCL)37);
-          // Add ramp-up and ramp-down symbols for SimpleCAT/UDP transmission
-          // genft4() generates 103 symbols (sync+data), but FT4 transmits 105 (with ramp)
-          // Shift symbols by 1 and add ramp symbols (value 0) at start and end
-          for (int i = 103; i > 0; --i) {
-            itone[i] = itone[i-1];
-          }
-          itone[0] = 0;    // Ramp-up symbol
-          itone[104] = 0;  // Ramp-down symbol
           int nsym=103;
           int nsps=4*576;
           if(m_mode=="FT2") nsps=4*288;
@@ -8542,18 +8531,17 @@ void MainWindow::useNextCall()
 }
 
 void MainWindow::startTx2()
-{
+{    
   bool modulator_active;
-  bool remote_modulator = m_tci_audio || m_config.is_simple_cat ();
-  if (m_tci_audio) modulator_active = m_tci_mod_active;
-  else if (m_config.is_simple_cat ()) modulator_active = false;
-  else modulator_active = m_modulator->isActive ();
+  bool tci_active = m_tci_audio;
+  if (tci_active) modulator_active=m_tci_mod_active;
+  else modulator_active=m_modulator->isActive ();
     if (!modulator_active) { // TODO - not thread safe
     double fSpread=0.0;
     double snr=99.0;
     QString t=ui->tx5->currentText();
     if(t.mid(0,1)=="#") fSpread=t.mid(1,5).toDouble();
-    if (remote_modulator) Q_EMIT m_config.transceiver_spread(fSpread);
+    if (tci_active) Q_EMIT m_config.transceiver_spread(fSpread);
     else m_modulator->setSpread(fSpread); // TODO - not thread safe
     t=ui->tx6->text();
     if(t.mid(0,1)=="#") snr=t.mid(1,5).toDouble();
@@ -8582,7 +8570,7 @@ void MainWindow::startTx2()
 
 void MainWindow::stopTx()
 {
-  if (m_tci_audio || m_config.is_simple_cat ()) Q_EMIT m_config.transceiver_modulator_stop();
+  if (m_tci_audio) Q_EMIT m_config.transceiver_modulator_stop();
   else Q_EMIT endTransmitMessage ();
   m_btxok = false;
   m_transmitting = false;
@@ -8591,7 +8579,7 @@ void MainWindow::stopTx()
     tx_status_label.setStyleSheet("");
     tx_status_label.setText("");
   }
-  if (m_tci_audio || m_config.is_simple_cat ()) {
+  if (m_tci_audio) {
     ptt0Timer.start(0);
   } else {
     ptt0Timer.start(200);                //end-of-transmission sequencer delay
@@ -8602,7 +8590,7 @@ void MainWindow::stopTx()
 
 void MainWindow::stopTx2()
 {
-  if (m_tci_audio || m_config.is_simple_cat ()) {
+  if (m_tci_audio) {
       Q_EMIT m_config.transceiver_ptt (false);      //Lower PTT
       monitor (true);
       statusUpdate ();
@@ -12381,14 +12369,8 @@ void MainWindow::on_tuneButton_clicked (bool checked)
     on_monitorButton_clicked (true);
     m_tune=true;
   }
-  bool const simple_cat {m_config.is_simple_cat ()};
-  // For TCI-only remote, use transceiver_tune; otherwise use local tune
   if (m_tci_audio) Q_EMIT m_config.transceiver_tune(checked);
   else Q_EMIT tune (checked);
-  // For Simple CAT, also send transceiver_tune for remote device
-  if (simple_cat && checked) {
-    Q_EMIT m_config.transceiver_tune(checked);
-  }
 }
 
 
@@ -12750,9 +12732,8 @@ void MainWindow::rigFailure (QString const& reason)
 
 void MainWindow::transmit (double snr)
 {
-  bool const tci_only_remote {m_tci_audio};
   bool const simple_cat {m_config.is_simple_cat ()};
-  
+
   // For Simple CAT, send ITONE commands to the device
   if (simple_cat) {
     Q_EMIT m_config.transceiver_tx_symbols (getTransmittedSymbols ());
@@ -12763,18 +12744,15 @@ void MainWindow::transmit (double snr)
     if(m_nSubMode==0) toneSpacing=11025.0/4096.0;
     if(m_nSubMode==1) toneSpacing=2*11025.0/4096.0;
     if(m_nSubMode==2) toneSpacing=4*11025.0/4096.0;
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT65_SYMBOLS,
+             4096.0*12000.0/11025.0, ui->TxFreqSpinBox->value () - m_XIT,
+             toneSpacing,true,false,snr,m_TRperiod);
+    } else {
       Q_EMIT sendMessage (m_mode, NUM_JT65_SYMBOLS,
              4096.0*12000.0/11025.0, ui->TxFreqSpinBox->value () - m_XIT,
              toneSpacing, m_soundOutput, m_config.audio_output_channel (),
              true, false, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT65_SYMBOLS,
-             4096.0*12000.0/11025.0, ui->TxFreqSpinBox->value () - m_XIT,
-             toneSpacing,true,false,snr,m_TRperiod);
     }
   }
 
@@ -12791,51 +12769,42 @@ void MainWindow::transmit (double snr)
     if(m_config.x4ToneSpacing()) toneSpacing=4*12000.0/1920.0;
     if(SpecOp::FOX==m_specOp and !m_tune) toneSpacing=-1;
     if(SpecOp::FOX==m_specOp and m_config.superFox()) {
-      // Send local audio (unless TCI-only remote)
-      if (!tci_only_remote) {
+      if (m_tci_audio) {
+        Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_SUPERFOX_SYMBOLS,
+            1024.0,ui->TxFreqSpinBox->value()-m_XIT,
+            toneSpacing,true,false,snr,m_TRperiod);
+      } else {
         Q_EMIT sendMessage (m_mode, NUM_SUPERFOX_SYMBOLS,
             1024.0, ui->TxFreqSpinBox->value () - m_XIT,
             toneSpacing, m_soundOutput, m_config.audio_output_channel (),
             true, false, snr, m_TRperiod);
       }
-      // Send remote modulator start for TCI and Simple CAT
-      if (tci_only_remote || simple_cat) {
-        Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_SUPERFOX_SYMBOLS,
-            1024.0,ui->TxFreqSpinBox->value()-m_XIT,
-            toneSpacing,true,false,snr,m_TRperiod);
-      }
     } else {
-      // Send local audio (unless TCI-only remote)
-      if (!tci_only_remote) {
-        Q_EMIT sendMessage (m_mode, NUM_FT8_SYMBOLS,
-            1920.0, ui->TxFreqSpinBox->value () - m_XIT,
-            toneSpacing, m_soundOutput, m_config.audio_output_channel (),
-            true, false, snr, m_TRperiod);
-      }
-      // Send remote modulator start for TCI and Simple CAT
-      if (tci_only_remote || simple_cat) {
-        Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT8_SYMBOLS,
-            1920.0,ui->TxFreqSpinBox->value()-m_XIT,
-            toneSpacing,true,false,snr,m_TRperiod);
-      }
+        if (m_tci_audio) {
+          Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT8_SYMBOLS,
+              1920.0,ui->TxFreqSpinBox->value()-m_XIT,
+              toneSpacing,true,false,snr,m_TRperiod);
+        } else {
+          Q_EMIT sendMessage (m_mode, NUM_FT8_SYMBOLS,
+              1920.0, ui->TxFreqSpinBox->value () - m_XIT,
+              toneSpacing, m_soundOutput, m_config.audio_output_channel (),
+              true, false, snr, m_TRperiod);
+        }
     }
   }
 
   if (m_mode == "FT4") {
     m_dateTimeSentTx3=QDateTime::currentDateTimeUtc();
     toneSpacing=-2.0;                     //Transmit a pre-computed, filtered waveform.
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT4_SYMBOLS,
+             576.0,ui->TxFreqSpinBox->value()-m_XIT,
+             toneSpacing,true,false,snr,m_TRperiod);
+    } else {
       Q_EMIT sendMessage (m_mode, NUM_FT4_SYMBOLS,
              576.0, ui->TxFreqSpinBox->value() - m_XIT,
              toneSpacing, m_soundOutput, m_config.audio_output_channel(),
              true, false, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FT4_SYMBOLS,
-             576.0,ui->TxFreqSpinBox->value()-m_XIT,
-             toneSpacing,true,false,snr,m_TRperiod);
     }
   }
 
@@ -12865,16 +12834,13 @@ void MainWindow::transmit (double snr)
     double f0=ui->WSPRfreqSpinBox->value() - m_XIT;
     if(m_mode=="FST4") f0=ui->TxFreqSpinBox->value() - m_XIT;
     if(!m_tune) f0 += 1.5*dfreq;
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FST4_SYMBOLS,double(nsps),f0,toneSpacing,
+             true,false,snr,m_TRperiod);
+    } else {
       Q_EMIT sendMessage (m_mode, NUM_FST4_SYMBOLS,double(nsps),f0,toneSpacing,
                           m_soundOutput,m_config.audio_output_channel(),
                           true, false, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_FST4_SYMBOLS,double(nsps),f0,toneSpacing,
-             true,false,snr,m_TRperiod);
     }
   }
 
@@ -12887,18 +12853,15 @@ void MainWindow::transmit (double snr)
     int mode65=pow(2.0,double(m_nSubMode));
     toneSpacing=mode65*12000.0/nsps;
 //    toneSpacing=-4.0;
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_Q65_SYMBOLS,
+             double(nsps),ui->TxFreqSpinBox->value()-m_XIT,
+             toneSpacing,true,false,snr,m_TRperiod);
+    } else {
       Q_EMIT sendMessage (m_mode, NUM_Q65_SYMBOLS,
              double(nsps), ui->TxFreqSpinBox->value () - m_XIT,
              toneSpacing, m_soundOutput, m_config.audio_output_channel (),
              true, false, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_Q65_SYMBOLS,
-             double(nsps),ui->TxFreqSpinBox->value()-m_XIT,
-             toneSpacing,true,false,snr,m_TRperiod);
     }
   }
 
@@ -12915,18 +12878,15 @@ void MainWindow::transmit (double snr)
       sps=nsps[m_nSubMode-4];
       m_toneSpacing=12000.0/sps;
     }
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT9_SYMBOLS,sps,
+             ui->TxFreqSpinBox->value()-m_XIT,
+             m_toneSpacing,true,fastmode,snr,m_TRperiod);
+    } else {
       Q_EMIT sendMessage (m_mode, NUM_JT9_SYMBOLS, sps,
                           ui->TxFreqSpinBox->value() - m_XIT, m_toneSpacing,
                           m_soundOutput, m_config.audio_output_channel (),
                           true, fastmode, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT9_SYMBOLS,sps,
-             ui->TxFreqSpinBox->value()-m_XIT,
-             m_toneSpacing,true,fastmode,snr,m_TRperiod);
     }
   }
 
@@ -12944,16 +12904,13 @@ void MainWindow::transmit (double snr)
     int nsym;
     nsym=NUM_MSK144_SYMBOLS;
     if(itone[40] < 0) nsym=40;
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, nsym,double(m_nsps),f0, m_toneSpacing,
+             true,true,snr,m_TRperiod);
+    } else {
       Q_EMIT sendMessage (m_mode, nsym, double(m_nsps), f0, m_toneSpacing,
                           m_soundOutput, m_config.audio_output_channel (),
                           true, true, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, nsym,double(m_nsps),f0, m_toneSpacing,
-             true,true,snr,m_TRperiod);
     }
   }
 
@@ -12965,18 +12922,15 @@ void MainWindow::transmit (double snr)
     if(m_nSubMode==4) toneSpacing=18*4.375;
     if(m_nSubMode==5) toneSpacing=36*4.375;
     if(m_nSubMode==6) toneSpacing=72*4.375;
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT4_SYMBOLS,
+             2520.0*12000.0/11025.0,ui->TxFreqSpinBox->value()-m_XIT,
+             toneSpacing,true,false,snr,m_TRperiod);
+     } else {
       Q_EMIT sendMessage (m_mode, NUM_JT4_SYMBOLS,
              2520.0*12000.0/11025.0, ui->TxFreqSpinBox->value () - m_XIT,
              toneSpacing, m_soundOutput, m_config.audio_output_channel (),
              true, false, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_JT4_SYMBOLS,
-             2520.0*12000.0/11025.0,ui->TxFreqSpinBox->value()-m_XIT,
-             toneSpacing,true,false,snr,m_TRperiod);
     }
   }
 
@@ -12984,20 +12938,17 @@ void MainWindow::transmit (double snr)
     int nToneSpacing=1;
     if(m_config.x2ToneSpacing()) nToneSpacing=2;
     if(m_config.x4ToneSpacing()) nToneSpacing=4;
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
+    if (m_tci_audio) {
+      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_WSPR_SYMBOLS,8192.0,
+             ui->TxFreqSpinBox->value() - 1.5 * 12000 / 8192,
+             m_toneSpacing*nToneSpacing,true,false,snr,
+             m_TRperiod);
+    } else {
       Q_EMIT sendMessage (m_mode, NUM_WSPR_SYMBOLS, 8192.0,
                           ui->TxFreqSpinBox->value() - 1.5 * 12000 / 8192,
                           m_toneSpacing*nToneSpacing, m_soundOutput,
                           m_config.audio_output_channel(),true, false, snr,
                           m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
-      Q_EMIT m_config.transceiver_modulator_start(m_mode, NUM_WSPR_SYMBOLS,8192.0,
-             ui->TxFreqSpinBox->value() - 1.5 * 12000 / 8192,
-             m_toneSpacing*nToneSpacing,true,false,snr,
-             m_TRperiod);
     }
   }
 
@@ -13037,15 +12988,12 @@ void MainWindow::transmit (double snr)
     }
 
     m_msEchoTxStart=QDateTime::currentMSecsSinceEpoch();
-    // Send local audio (unless TCI-only remote)
-    if (!tci_only_remote) {
-      Q_EMIT sendMessage (m_mode,numEchoSymbols,framesPerSymbol,freq,toneSpacing,m_soundOutput,
-                          m_config.audio_output_channel(), false, false, snr, m_TRperiod);
-    }
-    // Send remote modulator start for TCI and Simple CAT
-    if (tci_only_remote || simple_cat) {
+    if (m_tci_audio) {
       Q_EMIT m_config.transceiver_modulator_start(m_mode,numEchoSymbols,framesPerSymbol,freq,toneSpacing,
              false,false,snr,m_TRperiod);
+    } else {
+      Q_EMIT sendMessage (m_mode,numEchoSymbols,framesPerSymbol,freq,toneSpacing,m_soundOutput,
+                          m_config.audio_output_channel(), false, false, snr, m_TRperiod);
     }
   }
 

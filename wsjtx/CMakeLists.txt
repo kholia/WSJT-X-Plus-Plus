@@ -231,8 +231,6 @@ set (wsjt_qt_CXXSRCS
   Transceiver/TransceiverFactory.cpp
   Transceiver/PollingTransceiver.cpp
   Transceiver/HamlibTransceiver.cpp
-  Transceiver/SimpleCATTransceiver.cpp
-  Transceiver/serialib.cpp
   Transceiver/TCITransceiver.cpp
   Transceiver/HRDTransceiver.cpp
   Transceiver/DXLabSuiteCommanderTransceiver.cpp
@@ -1551,8 +1549,7 @@ target_link_libraries (qcp Qt5::Widgets Qt5::PrintSupport)
 add_library (wsjt_qt STATIC ${wsjt_qt_CXXSRCS} ${wsjt_qt_GENUISRCS} ${GENAXSRCS})
 # set wsjtx_udp exports to static variants
 target_compile_definitions (wsjt_qt PUBLIC UDP_STATIC_DEFINE)
-target_include_directories (wsjt_qt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Transceiver)
-target_link_libraries (wsjt_qt Hamlib::Hamlib Boost::log qcp Qt5::Widgets Qt5::Network Qt5::Sql Qt5::WebSockets Qt5::SerialPort)
+target_link_libraries (wsjt_qt Hamlib::Hamlib Boost::log qcp Qt5::Widgets Qt5::Network Qt5::Sql Qt5::WebSockets)
 if (WIN32)
   target_link_libraries (wsjt_qt Qt5::AxContainer Qt5::AxBase)
 endif (WIN32)

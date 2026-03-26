@@ -3,7 +3,6 @@
 #include <QMetaType>
 
 #include "HamlibTransceiver.hpp"
-#include "SimpleCATTransceiver.hpp"
 #include "TCITransceiver.hpp"
 #include "DXLabSuiteCommanderTransceiver.hpp"
 #include "HRDTransceiver.hpp"
@@ -28,7 +27,6 @@ namespace
       NonHamlibBaseId = 99899
       , TCI1Id
       , TCI2Id
-      , SimpleCATId
       , CommanderId
       , HRDId
       , OmniRigOneId
@@ -40,7 +38,6 @@ TransceiverFactory::TransceiverFactory ()
   : logger_ (boost::log::keywords::channel = "RIGCTRL")
 {
   HamlibTransceiver::register_transceivers (&logger_, &transceivers_);
-  SimpleCATTransceiver::register_transceivers (&logger_, &transceivers_, SimpleCATId);
   TCITransceiver::register_transceivers (&logger_, &transceivers_, TCI1Id, TCI2Id);
   DXLabSuiteCommanderTransceiver::register_transceivers (&logger_, &transceivers_, CommanderId);
   HRDTransceiver::register_transceivers (&logger_, &transceivers_, HRDId);
@@ -117,14 +114,6 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& pa
             result->moveToThread (target_thread);
           }
       }
-      break;
-
-    case SimpleCATId:
-      result.reset (new SimpleCATTransceiver {&logger_, params});
-      if (target_thread)
-        {
-          result->moveToThread (target_thread);
-        }
       break;
 
     case CommanderId:

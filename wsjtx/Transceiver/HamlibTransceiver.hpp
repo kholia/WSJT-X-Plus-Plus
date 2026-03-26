@@ -32,6 +32,7 @@ private:
   void do_mode (MODE) override;
   void do_ptt (bool) override;
   void do_tune (bool) override;
+  void do_tx_symbols (QString const &) override;
 
   void do_poll () override;
 

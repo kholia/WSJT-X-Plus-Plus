@@ -1334,3 +1334,34 @@ void HamlibTransceiver::do_tune (bool on)
     }
 #endif
 }
+
+// Send ITONE symbol data to Simple CAT rig
+void HamlibTransceiver::do_tx_symbols (QString const &tx_symbols)
+{
+  // Check if this is a Simple CAT rig
+  QString const model_name = QString::fromLatin1 (rig_get_caps_cptr (m_->model_, RIG_CAPS_MODEL_NAME_CPTR)).trimmed ();
+  if (model_name != "Simple CAT")
+    {
+      return; // Only Simple CAT supports ITONE
+    }
+
+  if (tx_symbols.isEmpty ())
+    {
+      CAT_TRACE ("Simple CAT: ignoring empty tx_symbols");
+      return;
+    }
+
+  CAT_TRACE ("Simple CAT: sending ITONE symbols length=" << tx_symbols.length ());
+
+  // Look up the ITONE token and send ITONE data via rig_set_conf
+  // The hamlib simplecat backend expects the symbols as space-separated integers
+  token_t token = rig_token_lookup (m_->rig_.data (), "ITONE");
+  if (RIG_CONF_END == token)
+    {
+      CAT_ERROR ("Simple CAT: ITONE token not found");
+      return;
+    }
+
+  m_->error_check (rig_set_conf (m_->rig_.data (), token, tx_symbols.toLatin1 ().data ()),
+                   tr ("setting ITONE symbols"));
+}

@@ -507,7 +507,7 @@ public:
   void transceiver_spread (double);
   void transceiver_nsym (int);
   void transceiver_trfrequency (double);
-  void transceiver_tx_symbols (QString const&);
+  void transceiver_tx_symbols (QString const &);
   void transceiver_volume (double);
   void transceiver_txvolume (double);
   void sync_transceiver (bool force_signal);
@@ -1336,7 +1336,7 @@ void Configuration::transceiver_trfrequency (double trfrequency)
   m_->transceiver_trfrequency (trfrequency);
 }
 
-void Configuration::transceiver_tx_symbols (QString const& tx_symbols)
+void Configuration::transceiver_tx_symbols (QString const &tx_symbols)
 {
 #if WSJT_TRACE_CAT
   qDebug () << "Configuration::transceiver_tx_symbols:" << tx_symbols << m_->cached_rig_state_;
@@ -3351,6 +3351,7 @@ void Configuration::impl::accept ()
                                  // related configuration parameters
   rig_is_dummy_ = TransceiverFactory::basic_transceiver_name_ == rig_params_.rig_name;
   is_tci_ = rig_params_.rig_name.startsWith("TCI Cli");
+
   // Check to see whether SoundInThread must be restarted,
   // and save user parameters.
   {
@@ -5304,7 +5305,7 @@ void Configuration::impl::transceiver_trfrequency (double trfrequency)
   }
 }
 
-void Configuration::impl::transceiver_tx_symbols (QString const& tx_symbols)
+void Configuration::impl::transceiver_tx_symbols (QString const &tx_symbols)
 {
   cached_rig_state_.online (true); // we want the rig online
   set_cached_mode ();
@@ -5343,8 +5344,7 @@ void Configuration::impl::transceiver_modulator_start (QString jtmode, unsigned 
 {
   cached_rig_state_.online (true); // we want the rig online
   set_cached_mode ();
-  bool const force_refresh {"Simple CAT" == rig_params_.rig_name};
-  if (!cached_rig_state_.tx_audio() || force_refresh)
+  if (!cached_rig_state_.tx_audio())
   {
     cached_rig_state_.tx_audio (true);
     cached_rig_state_.symbolslength (symbolslength);

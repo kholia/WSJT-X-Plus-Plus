@@ -427,8 +427,9 @@ public:
   //
   Q_SLOT void transceiver_trfrequency (double = 1500.0);
 
-  // Set transmitted symbol string for remote modulators.
-  Q_SLOT void transceiver_tx_symbols (QString const&);
+  // Set transmitted symbol string for Simple CAT rig.
+  //
+  Q_SLOT void transceiver_tx_symbols (QString const &);
 
   // Attempt to (re-)synchronise transceiver state.
   //

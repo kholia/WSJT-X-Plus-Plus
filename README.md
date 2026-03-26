@@ -16,6 +16,4 @@ make -j8
 sudo make super-install
 ```
 
-Note: My changes are in the `wsjtx.patch` file.
-
-Windows users: Grab the latest WSJT-X-Plus-Plus installer from https://github.com/kholia/WSJT-X-Plus-Plus/actions page.
+Windows users: [Grab the latest WSJT-X-Plus-Plus (plain) installer file here.](https://github.com/kholia/WSJT-X-Plus-Plus/raw/refs/heads/limitless/wsjtx-windows-installer-x64-plain.zip)
