@@ -195,9 +195,12 @@ add_dependencies (wsjtx-install hamlib-install)
 add_dependencies (wsjtx-package hamlib-install)
 
 # export traditional targets
+#
+# Modern CMake reserves target names like "install" and "package", so use
+# distinct names for the superbuild wrapper targets.
 add_custom_target (build ALL DEPENDS wsjtx-build)
-add_custom_target (install DEPENDS wsjtx-install)
-add_custom_target (package DEPENDS wsjtx-package)
+add_custom_target (super-install DEPENDS wsjtx-install)
+add_custom_target (super-package DEPENDS wsjtx-package)
 
 
 #
